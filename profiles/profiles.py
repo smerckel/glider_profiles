@@ -383,7 +383,8 @@ class CrossSpectral(ProfileSplitter):
 
     def series_length(self):
         n=self.len()
-        series_length=[self.get_cast(i,'time')[0].shape[0] for i in range(n)]
+        series_length=[self.get_cast(i,ProfileSplitter.T_str)[0].shape[0]
+                       for i in range(n)]
         min_series_length=min(series_length)
         sl=self.ideal_length(min_series_length)
         return n,series_length,sl
@@ -412,7 +413,7 @@ class CrossSpectral(ProfileSplitter):
         FCT=FC/FT
         a=FCT.real
         b=FCT.imag
-        dT=np.diff(self.data['time']).mean()
+        dT=np.diff(self.data[ProfileSplitter.T_str]).mean()
         fn=0.5*1./dT
         omega=np.arange(sl/2/binsize)*fn/float(sl/2/binsize)*2.*np.pi
         print("sample length:",sl)
