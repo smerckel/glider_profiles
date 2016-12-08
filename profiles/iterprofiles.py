@@ -11,8 +11,12 @@ lucas.merckelbach@hzg.de
 
 '''
 
+from collections import namedtuple
+
 import numpy as np
 from functools import reduce
+
+profile_integrated = namedtuple("profile_integrated","t C c0 c1 H0 H1 H")
 
 class Profile(object):
     def __init__(self,data,i_down,i_up,
@@ -150,6 +154,9 @@ class Profile(object):
                                                    d[iall]<=bottom_level[iall]))
         else:
             i_section=iall
+            top_level = np.ones(d.shape[0],float)*d.min()
+            bottom_level = np.ones(d.shape[0],float)*d.max()
+            
         I=np.trapz(x[i_section],d[i_section])
         if len(i_section)<min_values:
             I=0
@@ -174,7 +181,7 @@ class Profile(object):
                 bottom_value=0
             H_top=d[i_section[0]]
             H_bottom=d[i_section[-1]]
-        return tm,-I/H,top_value,bottom_value,H_top,H_bottom
+        return profile_integrated(tm,I,top_value,bottom_value,H_top,H_bottom, -H)
 
 
 
@@ -496,3 +503,44 @@ class Thermocline(ProfileSplitter):
         self.add_level_timeseries(ttcl.T.ravel(),ztcl.T.ravel(),level_name='pycnocline_depth')
         return ttcl,ztcl
         
+
+class CrossSpectral(ProfileSplitter):
+    def __init__(self,data={},window_size=9,threshold_bar_per_second=1e-3):
+        ProfileSplitter.__init__(self,data,window_size,threshold_bar_per_second)
+    
+    def ideal_length(self,n):
+        return 2**int(np.log2(n))
+
+    def series_length(self):
+        series_length = [p.i_cast.shape[0] for p in self]
+        min_series_length = min(series_length)
+        ideal_series_length = self.ideal_length(min_series_length)
+        return ideal_series_length
+
+    def do_ffts(self,parameter,fft_length):
+        fftC = []
+        for p in self:
+            n = p.i_cast.shape[0]//2
+            j0 = n - fft_length//2
+            j1 = n + fft_length//2
+            _, C = p.get_cast(parameter)
+            Cw = C[j0:j1]
+            fftC.append(np.fft.fft(Cw))
+        fftC = np.array(fftC)
+        return fftC.mean(axis = 0)
+
+    def Hs(self,param0,param1):
+        sl=self.series_length()
+
+        FC = self.do_ffts(param0, sl)
+        FT = self.do_ffts(param1, sl)
+        FCT=(FC/FT)[:sl//2]
+        a=FCT.real
+        b=FCT.imag
+        p = self[0]
+        t = self.data[self.T_str][p.i_cast]
+        dT=np.diff(t).mean()
+        fn=0.5*1./dT
+        omega=np.arange(sl/2)*fn/float(sl/2)*2.*np.pi
+        print("sample length:",sl)
+        return omega,a**2+b**2,np.arctan(b/a)

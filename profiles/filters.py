@@ -1,10 +1,3 @@
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-from __future__ import absolute_import
-from builtins import range
-from future import standard_library
-standard_library.install_aliases()
 import numpy as np
 class GeneralFilter2nd(object):
     ''' General discrete filter of the transfer function
@@ -113,6 +106,35 @@ class LagFilter(GeneralFilter):
         GeneralFilter.__init__(self,gain,0.,1.0,delay)
 
     
+class ThermalLagFilter(LeadLag):
+    def __init__(self,gamma,alpha,beta):
+        LeadLag.__init__(self,1,1)
+        self.set_parameters(gamma,alpha,beta)
+
+    def set_parameters(self,gamma,alpha,beta):
+        self.c1=0.
+        self.c2=gamma*alpha/beta
+        self.d1=1.
+        self.d2=1./beta
+        
+    def calculate_coefs(self,DT):
+        c1=self.c1
+        c2=self.c2
+        d1=self.d1
+        d2=self.d2
+        denom=(d1+d2*2./DT)
+        a0=(c1+c2*2./DT)/denom
+        a1=(c1-c2*2./DT)/denom
+        b1=(d1-d2*2./DT)/denom
+        return a0,a1,b1
+    
+    def calculate_alpha_beta(self,DT,gamma):
+        fn=2./DT
+        a0,a1,b1=self.calculate_coefs(DT)
+        print("a0,b1:",a0,b1)
+        beta=fn*(1+b1)/(1-b1)
+        alpha=2*a0*beta/fn/(1+b1)/gamma
+        return alpha,beta
 
 if __name__=="__main__":
     import random
