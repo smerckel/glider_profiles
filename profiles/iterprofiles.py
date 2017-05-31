@@ -14,9 +14,44 @@ lucas.merckelbach@hzg.de
 from collections import namedtuple
 
 import numpy as np
+from scipy.signal import csd, coherence, detrend
+from scipy.signal.spectral import _fft_helper
 from functools import reduce
+from . import filters
 
 profile_integrated = namedtuple("profile_integrated","t C c0 c1 H0 H1 H")
+
+
+def gain_and_delay(t, x, y, nperseg):
+    ''' computes a coherence spectrum of H, assuming
+    
+        Y(s) = H(s) * X(s)
+  
+        returns omega, gain and phase delay.
+
+    '''
+    _n = len(t)
+    mantis = int(np.log2(_n))
+    n = 2**mantis
+    t=t[:n]
+    x = x[:n]
+    y = y[:n]
+    dt = np.diff(t).mean()
+    fs = 1/dt
+    if nperseg%2:
+        num_freqs = (nperseg+1)//2
+    else:
+        num_freqs = nperseg//2 + 1
+    X=_fft_helper(x,np.hanning(nperseg),lambda x: detrend(x,type='constant'),nperseg, nperseg//2, nperseg)[...,:num_freqs]*2
+    Y=_fft_helper(y,np.hanning(nperseg),lambda x: detrend(x,type='constant'),nperseg, nperseg//2, nperseg)[...,:num_freqs]*2
+
+    YX = (Y/X).mean(axis=0)
+    a=YX.real
+    b=YX.imag
+    fn=0.5*fs
+    omega=np.arange(num_freqs)*fn/float(num_freqs)*2.*np.pi
+    return omega,a**2+b**2,np.arctan(b/a)
+
 
 class Profile(object):
     def __init__(self,data,i_down,i_up,
@@ -78,11 +113,11 @@ class Profile(object):
     def get_downcast(self,parameter,co_parameter=None,despike=False):
         return self.__get_cast_data(self.i_down,parameter,co_parameter,despike)
 
-    def get_downcast_integrated(self,parameter,levels=[],despike=False,min_values=3):
-        return self.__get_cast_integrated(parameter,levels,'down',despike,min_values)
+    def get_downcast_integrated(self,parameter,levels=[],despike=False,min_values=3, avg_distance=1):
+        return self.__get_cast_integrated(parameter,levels,'down',despike,min_values, avg_distance)
 
-    def get_upcast_integrated(self,parameter,levels=[],despike=False,min_values=3):
-        return self.__get_cast_integrated(parameter,levels,'up',despike,min_values)
+    def get_upcast_integrated(self,parameter,levels=[],despike=False,min_values=3, avg_distance=1):
+        return self.__get_cast_integrated(parameter,levels,'up',despike,min_values, avg_distance)
     
     def get_downcast_gradient(self,parameter,levels=[],despike=False,min_values=3):
         return self.__get_cast_gradient(parameter,levels,'down',despike,min_values)
@@ -128,14 +163,23 @@ class Profile(object):
             dxdz=0
         return dxdz
     
-            
-    def __get_cast_integrated(self,parameter,levels,direction,despike,min_values):
+    def get_level(self, get_fun, level):
+        try:
+            _, z = get_fun(level)
+        except ValueError:
+            z = level
+        else:
+            z=z.mean()
+        return z
+    
+    def __get_cast_integrated(self,parameter,levels,direction,despike,min_values, avg_distance):
+        # avg_distance: to determine the value on a level (top level/ bottom level, a median value is computed within avg_distance
+        
         if direction=="up":
             get_fun=self.get_upcast
-
         else:
             get_fun=self.get_downcast
-            fc=1
+
         s=int(direction=="down")*2-1 # stride -1 for upcast, +1 for downcast
         
         t,x=get_fun(parameter)
@@ -149,14 +193,15 @@ class Profile(object):
         i=np.where(np.diff(d)>0)[0]
         iall=np.hstack([i,[i[-1]+1]])
         if levels:
-            top_level,bottom_level=get_fun(levels[0],levels[1])
-            i_section=iall.compress(np.logical_and(d[iall]>=top_level[iall],
-                                                   d[iall]<=bottom_level[iall]))
+            top_level = self.get_level(get_fun, levels[0])
+            bottom_level = self.get_level(get_fun, levels[1])
+            i_section=iall.compress(np.logical_and(d[iall]>=top_level,
+                                                   d[iall]<=bottom_level))
         else:
             i_section=iall
-            top_level = np.ones(d.shape[0],float)*d.min()
-            bottom_level = np.ones(d.shape[0],float)*d.max()
-            
+            top_level = d.min()
+            bottom_level = d.max()
+        
         I=np.trapz(x[i_section],d[i_section])
         if len(i_section)<min_values:
             I=0
@@ -169,12 +214,12 @@ class Profile(object):
         else:
             H=(d[i_section[0]]-d[i_section[-1]])
             tm=t[i_section].mean()
-            _i=iall.compress(abs(d[iall]-top_level[iall])<1)
+            _i=iall.compress(abs(d[iall]-top_level)<avg_distance/2)
             if len(_i):
                 top_value=np.median(x[_i])
             else:
                 top_value=0
-            _i=iall.compress(abs(d[iall]-bottom_level[iall])<1)
+            _i=iall.compress(abs(d[iall]-bottom_level)<avg_distance/2)
             if len(_i):
                 bottom_value=np.median(x[_i])
             else:
@@ -183,39 +228,6 @@ class Profile(object):
             H_bottom=d[i_section[-1]]
         return profile_integrated(tm,I,top_value,bottom_value,H_top,H_bottom, -H)
 
-
-
-class Thermocline(Profile):
-    def __init__(self,data,i_down,i_up):
-        Profile.__init__(self,data,i_down,i_up)
-    
-    def add_buoyancy_frequency(self,rho0=1027.,window=15):
-        W=window
-        rho=self.data['rho']
-        z=self.data[self.P_str]*10
-        _N2=9.81/rho0*np.gradient(rho)/np.gradient(z)
-        N2=np.convolve(_N2,np.ones(W)/W,'same')
-        self.data['N2']=N2
-
-    def calc_thermocline_maxN2(self,N2_crit=1e-3):
-        
-        N2_crit=self.__select_value('N2_crit',N2_crit)
-        t,P,rho,N2=self.calc_buoyancy_frequency()
-        z_tc=[]
-        t_tc=[]
-        N2_tc=[]
-        for _t,_z,_N2 in zip(t,P,N2):
-            z_max=_z.max()
-            i=np.where(np.logical_and(_z<0.8*z_max,_z>5))[0]
-            t_tc.append(_t.mean())
-            if _N2[i].max()>N2_crit:
-                idx=np.argmax(_N2[i])
-                z_tc.append(_z[i][idx])
-                N2_tc.append(_N2[i][idx])
-            else:
-                z_tc.append(0.)
-                N2_tc.append(np.nan)
-        return np.array(t_tc),np.array(z_tc),np.array(N2_tc)
 
 
     
@@ -407,8 +419,10 @@ class ProfileSplitter(list):
         if level_name not in self.levels:
             self.levels.append(level_name)
 
-    def get_downcast_integrated(self,parameter,levels=[],despike=False):
-        x=np.array([p.get_downcast_integrated(parameter,levels,despike)
+    def get_downcast_integrated(self,parameter,levels=[],despike=False, avg_distance=1):
+        ''' get integrated upcast value for parameter at levels. The values at the levels are median values computed over within avg_distance m'''
+                
+        x=np.array([p.get_downcast_integrated(parameter,levels,despike, avg_distance=avg_distance)
                     for p in self]).T
         s={'t':x[0],
            parameter:x[1],
@@ -417,10 +431,15 @@ class ProfileSplitter(list):
            "%s_z1"%(parameter):x[2],
            "%s_z0"%(parameter):x[3],
            "levels":levels}
+
+        profile_integrated = namedtuple("profile_integrated","t %s c0 c1 H0 H1 H"%(parameter))
+        s = profile_integrated(*x)
         return s
     
-    def get_upcast_integrated(self,parameter,levels=[],despike=False):
-        x=np.array([p.get_upcast_integrated(parameter,levels,despike)
+    def get_upcast_integrated(self,parameter,levels=[],despike=False, avg_distance=1):
+        ''' get integrated upcast value for parameter at levels. The values at the levels are median values computed over within avg_distance m'''
+        
+        x=np.array([p.get_upcast_integrated(parameter,levels,despike, avg_distance=avg_distance)
                     for p in self]).T
         s={'t':x[0],
            parameter:x[1],
@@ -429,8 +448,39 @@ class ProfileSplitter(list):
            "%s_z1"%(parameter):x[2],
            "%s_z0"%(parameter):x[3],
            "levels":levels}
+
+        profile_integrated = namedtuple("profile_integrated","t %s c0 c1 H0 H1 H"%(parameter))
+        s = profile_integrated(*x)
         return s
 
+    # some interpolation functions:
+    def interpolate_data(self,dt = 1):
+        ''' using linear interpolation '''
+        tctd = self.data["time"]
+        ti = np.arange(tctd.min(), tctd.max()+dt, dt)
+        for k, v in self.data.items():
+            if k=="time":
+                continue
+            self.data[k] = np.interp(ti, tctd, v)
+        self.data["time"] = ti
+
+    def interpolate_data_shape_preserving(self,dt = 1):
+        ''' using cubic shape preserving interpolation '''
+        tctd = self.data["time"]
+        ti = np.arange(tctd.min(), tctd.max()+dt, dt)
+        for k, v in self.data.items():
+            if k=="time":
+                continue
+            f = pchip(tctd, v)
+            self.data[k] = f(ti)
+        self.data["time"] = ti
+        
+    def lag_filter_pressure_data(self, delay, other_pressure_parameters = []):
+        ti = self.data["time"]
+        p = ["pressure"] + other_pressure_parameters
+        LF = filters.LagFilter(1,delay)
+        for k in p:
+            self.data[k] = LF.filter(ti, self.data[k])
 
 
 class Thermocline(ProfileSplitter):
@@ -444,9 +494,78 @@ class Thermocline(ProfileSplitter):
         W=window
         rho=self.data['rho']
         z=self.data[self.P_str]*10
-        _N2=9.81/rho0*np.gradient(rho)/np.gradient(z)
-        N2=np.convolve(_N2,np.ones(W)/W,'same')
+        dz = np.gradient(z)
+        drho = np.gradient(rho)
+        condition = np.abs(dz)>0.02 # if dz >? 2 cm compute N2, otherwise leave it nan
+        i = np.where(condition) 
+        _N2=9.81/rho0*drho[i]/dz[i]
+        _N2=np.convolve(_N2,np.ones(W)/W,'same')
+        N2 = np.zeros_like(z)*np.nan
+        N2[i] = _N2
         self.data['N2']=N2
+
+    def thermocline_depth_maxN2(self,
+                                direction="down",
+                                N2_crit=1e-3,
+                                min_depth=5,
+                                max_depth=35,
+                                max_depth_pct=80):
+        ttcl=np.zeros(len(self),float)
+        ztcl=np.zeros(len(self),float)
+
+        for j,p in enumerate(self):
+            if direction == "down":
+                f = p.get_downcast
+            elif direction == "up":
+                f = p.get_upcast
+            else:
+                raise ValueError("direction should be up or down.")
+            t,P=f(self.P_str)
+            _, N2=f("N2")
+            condition=np.logical_and(P*10>min_depth,
+                                     np.logical_or(P*10<max_depth,P<max_depth_pct/10*P.max()))
+            condition=np.logical_and(np.isfinite(N2), condition)
+            N2_section,P_section,t_section=np.compress(condition,[N2,P,t],axis=1)
+            i=np.argmax(N2_section)
+            if N2_section[i]>N2_crit:
+                ttcl[j]=t_section[i]
+                ztcl[j]=P_section[i]*10
+            else:
+                ttcl[j]=t_section[0]
+                ztcl[j]=np.nan
+        return ttcl, ztcl
+    
+    def thermocline_depth_max_temp_gradient(self,
+                                direction="down",
+                                Tgrad_crit=0.5, # 0.5 deg/m or more
+                                min_depth=5,
+                                max_depth=35,
+                                max_depth_pct=80):
+        ttcl=np.zeros(len(self),float)
+        ztcl=np.zeros(len(self),float)
+
+        for j,p in enumerate(self):
+            if direction == "down":
+                f = p.get_downcast
+            elif direction == "up":
+                f = p.get_upcast
+            else:
+                raise ValueError("direction should be up or down.")
+            t,P=f(self.P_str)
+            _, T=f("T")
+            dTdz = np.gradient(T)/np.gradient(P)/10.
+            condition=np.logical_and(P*10>min_depth,
+                                     np.logical_or(P*10<max_depth,P<max_depth_pct/10*P.max()))
+            condition=np.logical_and(np.isfinite(dTdz), condition)
+            dTdz_section,P_section,t_section=np.compress(condition,[dTdz,P,t],axis=1)
+            i=np.argmax(dTdz_section)
+            if dTdz_section[i]>Tgrad_crit:
+                ttcl[j]=t_section[i]
+                ztcl[j]=P_section[i]*10
+            else:
+                ttcl[j]=t_section[0]
+                ztcl[j]=np.nan
+        return ttcl, ztcl
 
     def calc_thermocline_maxN2(self,N2_crit=1e-3,
                                min_depth=5,
@@ -530,6 +649,7 @@ class CrossSpectral(ProfileSplitter):
         return fftC.mean(axis = 0)
 
     def Hs(self,param0,param1):
+        print("Consider using the .coherence() method")
         sl=self.series_length()
 
         FC = self.do_ffts(param0, sl)
@@ -544,3 +664,16 @@ class CrossSpectral(ProfileSplitter):
         omega=np.arange(sl/2)*fn/float(sl/2)*2.*np.pi
         print("sample length:",sl)
         return omega,a**2+b**2,np.arctan(b/a)
+
+    def coherence(self, param0, param1, nperseg):
+        ''' computes a coherence spectrum of H, assuming
+
+        Y(s) = H(s) * X(s)
+  
+        returns omega, gain and phase delay.
+
+        '''
+        t = self.data["time"]
+        x = self.data[param0]
+        y = self.data[param1]
+        return gain_and_delay(t, x, y, nperseg)
