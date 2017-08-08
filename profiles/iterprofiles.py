@@ -193,8 +193,13 @@ class Profile(object):
         i=np.where(np.diff(d)>0)[0]
         iall=np.hstack([i,[i[-1]+1]])
         if levels:
-            top_level = self.get_level(get_fun, levels[0])
-            bottom_level = self.get_level(get_fun, levels[1])
+            try:
+                lvl = self.get_level(get_fun, levels)
+                top_level = lvl - avg_distance/2
+                bottom_level = lvl + avg_distance/2
+            except (TypeError, ValueError) as e:
+                top_level = self.get_level(get_fun, levels[0])
+                bottom_level = self.get_level(get_fun, levels[1])
             i_section=iall.compress(np.logical_and(d[iall]>=top_level,
                                                    d[iall]<=bottom_level))
         else:
@@ -285,7 +290,13 @@ class ProfileSplitter(list):
         self.remove_incomplete_tuples=remove_incomplete_tuples
         self.levels=[]
         self.summary={}
-        
+
+    def __getattr__(self, a):
+        try:
+            return self.data[a]
+        except KeyError:
+            raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, x))
+    
     def set_window_size(self,window_size):
         ''' sets window size used in the moving averaged smoother of the pressure rate
         '''
