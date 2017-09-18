@@ -1,7 +1,7 @@
 from distutils.core import setup
 
 setup(name="ctd_toolbox",
-      version="0.1",
+      version="0.2",
       scripts=["dbd2asc.py"],
       description='Module for calculating CTD related stuff',
       author='Lucas Merckelbach',
