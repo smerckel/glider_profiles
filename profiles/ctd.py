@@ -2,7 +2,17 @@ import numpy as np
 from scipy.optimize import fmin
 from scipy.interpolate import pchip
 from profiles import iterprofiles, filters
-import fast_gsw
+try:
+    import fast_gsw
+except ImortError:
+    import gsw as fast_gsw
+
+    def __SA(C, t, p, lon, lat):
+        SP = fast_gsw.SP_from_C(C,t, p)
+        SA = fast_gsw.SA_from_SP(SP, p, lon, lat)
+        return SA
+    fast_gsw.SA = __SA
+    
 
 class ThermalLag(iterprofiles.ProfileSplitter):
     ''' Class to correct for the thermal lag issue.
