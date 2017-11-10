@@ -42,8 +42,8 @@ def gain_and_delay(t, x, y, nperseg):
         num_freqs = (nperseg+1)//2
     else:
         num_freqs = nperseg//2 + 1
-    X=_fft_helper(x,np.hanning(nperseg),lambda x: detrend(x,type='constant'),nperseg, nperseg//2, nperseg)[...,:num_freqs]*2
-    Y=_fft_helper(y,np.hanning(nperseg),lambda x: detrend(x,type='constant'),nperseg, nperseg//2, nperseg)[...,:num_freqs]*2
+    X=_fft_helper(x,np.hanning(nperseg),lambda x: detrend(x,type='constant'),nperseg, nperseg//2, nperseg,'oneside')[...,:num_freqs]*2
+    Y=_fft_helper(y,np.hanning(nperseg),lambda x: detrend(x,type='constant'),nperseg, nperseg//2, nperseg,'oneside')[...,:num_freqs]*2
 
     YX = (Y/X).mean(axis=0)
     a=YX.real
@@ -493,6 +493,45 @@ class ProfileSplitter(list):
         for k in p:
             self.data[k] = LF.filter(ti, self.data[k])
 
+    def get_profile(self, t):
+        ''' Get nearest profile.
+
+        For given time t, the method returns the profile that is closest in time.
+
+        Parameters:
+        -----------
+        
+        t: scalar | time in s
+
+        Returns:
+        --------
+        
+        profile that is closest in time.
+        '''
+        return self[self.get_profile_index(t)]
+    
+
+    def get_profile_index(self, t):
+        ''' Get nearest profile index.
+
+        For given time t, the method returns the profile index that is closest in time.
+
+        Parameters:
+        -----------
+        
+        t: scalar | time in s
+
+        Returns:
+        --------
+        
+        index of profile that is closest in time.
+        '''
+        cast_times = np.array([_p.t_cast for _p in self])
+        idx = np.argmin(np.abs(cast_times-t))
+        return idx
+
+
+    
 
 class Thermocline(ProfileSplitter):
     def __init__(self,data={},window_size=9,threshold_bar_per_second=1e-3,
