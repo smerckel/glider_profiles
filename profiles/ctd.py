@@ -56,14 +56,16 @@ class ThermalLag(iterprofiles.ProfileSplitter):
         else:
             raise NotImplementedError
         
-    def calibrate(self, lat = 54, lon =8, initial_values = [0.02, 0.03]):
+    def calibrate(self, lat = 54, lon =8, initial_values = [0.02, 0.03], Cparameter="C", Tparameter="T"):
         x = self.get_thermal_lag_coefs(lat = lat, lon = lon,
-                                       initial_values=initial_values)
+                                       initial_values=initial_values,
+                                       Cparameter=Cparameter, Tparameter=Tparameter)
         self.apply_thermal_lag_correction(*x, lon = lon, lat = lat)
         return x
     
-    def get_thermal_lag_coefs(self, lat = 54, lon = 8, initial_values = [0.02, 0.03]):
-        x = fmin(self.cost_function, initial_values, args=("C", "T", lon, lat))
+    def get_thermal_lag_coefs(self, lat = 54, lon = 8, initial_values = [0.02, 0.03],
+                              Cparameter="C", Tparameter="T"):
+        x = fmin(self.cost_function, initial_values, args=(Cparameter, Tparameter, lon, lat))
         return x
 
 
