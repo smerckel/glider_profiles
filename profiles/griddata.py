@@ -11,15 +11,18 @@ average value. Data between blocks are interpolated linearly.
 
 '''
 
-    def __init__(self,t,z,C):
+    def __init__(self,t,z,*C):
         ''' 
         Parameters:
         -----------
         t: 1D array (time)
         z: 1D array (depth)
-        C: (list of) 1D array(s) with the parameter to be gridded
-
+        *C: 1D array(s) to be gridded
         '''
+        for i,_C in enumerate(C):
+            ndim=len(_C.shape)
+            if ndim!=1:
+                raise ValueError('Argument %d is not an 1D-array: check it!' %(i+4))
         self.t=t
         self.z=z
         self.C=C
@@ -43,8 +46,9 @@ average value. Data between blocks are interpolated linearly.
             ti: equidistant time vector
             zi: equidistant z vector
             Ci: 2D array or list of arrays of gridded data.
-
         '''
+        print("")
+        print("            It might take a while...")
         # make sure we don't have silly z values above the surface.
         idx=np.where(self.z<0)[0]
         self.z[idx]=0.
@@ -58,36 +62,24 @@ average value. Data between blocks are interpolated linearly.
         idx=fun_t(self.t)
         jdx=fun_z(self.z)
         data={}
-        for v,k in enumerate(list(zip(idx,jdx))):
-            if k in data:
-                data[k].append(v)
-            else:
-                data[k]=[v]
         
-        ndim=len(self.C.shape)
-        if ndim==1:
-            C=self.C.reshape(1,-1)
-        else:
-            C=self.C.copy()
-        nparameters=C.shape[0]
-        if nparameters>10:
-            raise ValueError('Number of parameters to interpolate exceeds 10 (%d).'%(nparameters))
-        if nt*nz*nparameters>10e6:
+        nparameters = len(self.C)        
+        if nt*nz*nparameters > 10e6:
             raise ValueError('Too many data points: %d (limit 10e6)'%(nt*nz*nparameters))
+        for v,k in enumerate(list(zip(idx,jdx))):
+            data[k]=[v]
+            
         vi=[-99*np.ones((nt,nz),float) for i in range(nparameters)]
         for k,v in data.items():
             i,j=k
-            for m in range(nparameters):
-                vm=np.mean(C[m][v])
+            for m,C in enumerate(self.C):
+                vm=np.mean(C[v])
                 vi[m][int(i),int(j)]=vm
-        vi=self.__interpolate_grid(ti,zi,vi,dz,dt,max_span)
+        vi = self.__interpolate_grid(ti,zi,vi,dz,dt,max_span)
         self.ti=ti
         self.zi=zi
         self.Ci=vi
-        if nparameters==1:
-            return ti, zi, vi[0]
-        else:
-            return ti,zi,vi
+        return ti,zi,vi
 
     def __get_blocks(self, v, max_size=10):
         vi=(v==-99).astype(int)
