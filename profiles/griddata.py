@@ -59,8 +59,8 @@ average value. Data between blocks are interpolated linearly.
         nz=zi.shape[0]
         fun_t=interp1d(ti,np.arange(nt))
         fun_z=interp1d(zi,np.arange(nz))
-        idx=fun_t(self.t)
-        jdx=fun_z(self.z)
+        idx=fun_t(self.t).astype(int)
+        jdx=fun_z(self.z).astype(int)
         data={}
         
         nparameters = len(self.C)        
@@ -77,12 +77,12 @@ average value. Data between blocks are interpolated linearly.
             i,j=k
             for m,C in enumerate(self.C):
                 vm=np.mean(C[v])
-                vi[m][int(i),int(j)]=vm
+                vi[m][i,j]=vm
         vi = self.__interpolate_grid(ti,zi,vi,dz,dt,max_span)
         self.ti=ti
         self.zi=zi
         self.Ci=vi
-        return ti,zi,vi
+        return ti,zi,vi,data
 
     def __get_blocks(self, v, max_size=10):
         vi=(v==-99).astype(int)
