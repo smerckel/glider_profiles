@@ -67,7 +67,10 @@ average value. Data between blocks are interpolated linearly.
         if nt*nz*nparameters > 10e6:
             raise ValueError('Too many data points: %d (limit 10e6)'%(nt*nz*nparameters))
         for v,k in enumerate(list(zip(idx,jdx))):
-            data[k]=[v]
+            if k in data:
+                data[k].append(v)
+            else:
+                data[k]=[v]
             
         vi=[-99*np.ones((nt,nz),float) for i in range(nparameters)]
         for k,v in data.items():
