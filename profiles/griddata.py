@@ -39,7 +39,7 @@ average value. Data between blocks are interpolated linearly.
         ----------
             dt: grid size in time dimension
             dz: grid size in z dimension
-            max_span: time overwich data are allowed to be interpolated.
+            max_span: time over which data are allowed to be interpolated.
 
         Returns
         -------
