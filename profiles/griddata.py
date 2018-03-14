@@ -82,7 +82,7 @@ average value. Data between blocks are interpolated linearly.
         self.ti=ti
         self.zi=zi
         self.Ci=vi
-        return ti,zi,vi,data
+        return ti,zi,vi
 
     def __get_blocks(self, v, max_size=10):
         vi=(v==-99).astype(int)
