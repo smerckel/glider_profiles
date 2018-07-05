@@ -4,7 +4,7 @@ from scipy.interpolate import pchip
 from profiles import iterprofiles, filters
 try:
     import fast_gsw
-except ImortError:
+except ImportError:
     import gsw as fast_gsw
 
     def __SA(C, t, p, lon, lat):
