@@ -117,4 +117,4 @@ average value. Data between blocks are interpolated linearly.
             for block in blocks:
                 idx=[block[0]-1,block[-1]+1]
                 vi[block,i]=np.interp(block,idx,vi[idx,i])
-        return vi
+        return vi.T
