@@ -40,7 +40,7 @@ average value. Data between blocks are interpolated linearly.
         ----------
             dt: grid size in time dimension
             dz: grid size in z dimension
-            max_span: time overwich data are allowed to be interpolated.
+            max_span: time over which data are allowed to be interpolated.
             zi: interpolated z dimension (optional)
 
         Returns
@@ -60,6 +60,7 @@ average value. Data between blocks are interpolated linearly.
             zi = np.arange(0,self.z.max()+dz,dz)
         nt=ti.shape[0]
         nz=zi.shape[0]
+
         if nt*nz > 10e6:
             raise ValueError('Too many data points: %d (limit 10e6)'%(nt*nz))
         vi=np.ma.masked_all((nt,nz),float)
