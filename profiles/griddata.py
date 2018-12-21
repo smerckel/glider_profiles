@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import numpy as np
 from scipy.interpolate import interp1d
 
@@ -11,24 +13,23 @@ average value. Data between blocks are interpolated linearly.
 
 '''
 
-    def __init__(self,t,z,*C):
+    def __init__(self,t,z,C):
         ''' 
         Parameters:
         -----------
         t: 1D array (time)
         z: 1D array (depth)
-        *C: 1D array(s) to be gridded
+        C: 1D array to be gridded
         '''
-        for i,_C in enumerate(C):
-            ndim=len(_C.shape)
-            if ndim!=1:
-                raise ValueError('Argument %d is not an 1D-array: check it!' %(i+4))
+        ndim=len(C.shape)
+        if ndim!=1:
+            raise ValueError('Argument C is not an 1D-array: check it!')
         self.t=t
         self.z=z
         self.C=C
         self.ti = self.zi = self.Ci = None
 
-    def griddata(self, dt=300, dz=0.5, max_span=30*60):
+    def griddata(self, dt=300, dz=0.5, max_span=30*60, zi=None):
         '''griddata
         ========
 
@@ -40,6 +41,7 @@ average value. Data between blocks are interpolated linearly.
             dt: grid size in time dimension
             dz: grid size in z dimension
             max_span: time overwich data are allowed to be interpolated.
+            zi: interpolated z dimension (optional)
 
         Returns
         -------
@@ -50,34 +52,34 @@ average value. Data between blocks are interpolated linearly.
         print("")
         print("            It might take a while...")
         # make sure we don't have silly z values above the surface.
-        idx=np.where(self.z<0)[0]
-        self.z[idx]=0.
+        #idx=np.where(self.z<0)[0]
+        #self.z[idx]=0.
         #
         ti=np.arange(self.t.min(),self.t.max()+dt,dt)
-        zi=np.arange(0,self.z.max()+dz,dz)
+        if zi is None:
+            zi = np.arange(0,self.z.max()+dz,dz)
         nt=ti.shape[0]
         nz=zi.shape[0]
-        fun_t=interp1d(ti,np.arange(nt))
-        fun_z=interp1d(zi,np.arange(nz))
-        idx=fun_t(self.t)
-        jdx=fun_z(self.z)
-        data={}
+        if nt*nz > 10e6:
+            raise ValueError('Too many data points: %d (limit 10e6)'%(nt*nz))
+        vi=np.ma.masked_all((nt,nz),float)
         
-        nparameters = len(self.C)        
-        if nt*nz*nparameters > 10e6:
-            raise ValueError('Too many data points: %d (limit 10e6)'%(nt*nz*nparameters))
-        for v,k in enumerate(list(zip(idx,jdx))):
-            if k in data:
-                data[k].append(v)
-            else:
-                data[k]=[v]
-            
-        vi=[-99*np.ones((nt,nz),float) for i in range(nparameters)]
-        for k,v in data.items():
-            i,j=k
-            for m,C in enumerate(self.C):
-                vm=np.mean(C[v])
-                vi[m][int(i),int(j)]=vm
+        fun_t=interp1d(ti,np.arange(nt), bounds_error=False)
+        fun_z=interp1d(zi,np.arange(nz), bounds_error=False)
+        idx=(fun_t(self.t) + 0.5).astype(int)
+        jdx=(fun_z(self.z) + 0.5).astype(int)
+
+        data = defaultdict(list)
+        for v,k in enumerate(zip(idx,jdx)):
+            data[k].append(v)
+
+        for (i,j),v in data.items():
+            vm=np.mean(self.C[v])
+            #vm=np.median(self.C[v])
+            try:
+                vi[i,j]=vm
+            except ValueError: # happens when i or j are nan (out of range)
+                pass
         vi = self.__interpolate_grid(ti,zi,vi,dz,dt,max_span)
         self.ti=ti
         self.zi=zi
@@ -85,13 +87,15 @@ average value. Data between blocks are interpolated linearly.
         return ti,zi,vi
 
     def __get_blocks(self, v, max_size=10):
-        vi=(v==-99).astype(int)
+        # traverses the matrix along the second dimension and cuts into
+        # blocks of cells overwhich data should be interpolated in the first dimension
+        # max_span is the criterion used to cut into blocks
         blocks=[]
         new_block=True
         for i in range(len(v)):
-            if vi[i]==1 and not new_block:
+            if np.ma.is_masked(v[i]) and not new_block:
                 current_block.append(i)
-            elif vi[i]==1 and new_block:
+            elif np.ma.is_masked(v[i]) and new_block:
                 current_block=[i]
                 new_block=False
             elif not new_block:
@@ -103,18 +107,13 @@ average value. Data between blocks are interpolated linearly.
 
 
     def __interpolate_grid(self,ti,zi,vi,dz=0.5,dt=300,max_span=20*60):
-        nt,nz=vi[0].shape
+        # interpolates in the first dimension (ti) , but only for blocks
+        # of data that are considered "continuous", controlled by the max_span setting.
+        nt,nz=vi.shape
         max_size=int(np.ceil((max_span/dt)))
-        number_of_parameters=len(vi)
         for i in range(nz):
-            blocks=self.__get_blocks(vi[0][:,i],max_size=max_size)
+            blocks=self.__get_blocks(vi[:,i],max_size=max_size)
             for block in blocks:
                 idx=[block[0]-1,block[-1]+1]
-                for m in range(number_of_parameters):
-                    vi[m][block,i]=np.interp(block,idx,vi[m][idx,i])
-        vi_masked=[np.ma.masked_less(_vi,-98).T for _vi in vi]
-        return vi_masked
-
-
-
-
+                vi[block,i]=np.interp(block,idx,vi[idx,i])
+        return vi

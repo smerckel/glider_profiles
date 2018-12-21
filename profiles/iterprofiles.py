@@ -680,35 +680,64 @@ class CrossSpectral(ProfileSplitter):
     def ideal_length(self,n):
         return 2**int(np.log2(n))
 
-    def series_length(self):
-        series_length = [p.i_cast.shape[0] for p in self]
+    def series_length(self, cast):
+        if cast is None:
+            series_length = [p.i_cast.shape[0] for p in self]
+        elif cast =='up':
+            series_length = [p.i_up.shape[0] for p in self]
+        else:
+            series_length = [p.i_down.shape[0] for p in self]
         min_series_length = min(series_length)
         ideal_series_length = self.ideal_length(min_series_length)
         return ideal_series_length
 
-    def do_ffts(self,parameter,fft_length):
+    def do_ffts(self,parameter,fft_length, cast):
         fftC = []
         for p in self:
-            n = p.i_cast.shape[0]//2
+            if cast is None:
+                n = p.i_cast.shape[0]//2
+            elif cast == 'up':
+                n = p.i_up.shape[0]//2
+            else:
+                n = p.i_down.shape[0]//2
             j0 = n - fft_length//2
             j1 = n + fft_length//2
-            _, C = p.get_cast(parameter)
+            if cast is None:
+                _, C = p.get_cast(parameter)
+            elif cast == 'up':
+                _, C = p.get_upcast(parameter)
+            else:
+                _, C = p.get_downcast(parameter)
             Cw = C[j0:j1]
             fftC.append(np.fft.fft(Cw))
         fftC = np.array(fftC)
         return fftC.mean(axis = 0)
 
-    def Hs(self,param0,param1):
-        print("Consider using the .coherence() method")
-        sl=self.series_length()
+    def Hs(self,param0,param1, cast=None):
+        ''' Computes coherence based on time series
+            per cast. Consider the .coherence() method for the same
+            thing, but then on all data.
 
-        FC = self.do_ffts(param0, sl)
-        FT = self.do_ffts(param1, sl)
+            if cast is None: then use up and down casts
+            other options: cast='up' cast = 'down'
+
+        '''
+        print("Consider using the .coherence() method")
+
+        sl=self.series_length(cast)
+
+        FC = self.do_ffts(param0, sl, cast)
+        FT = self.do_ffts(param1, sl, cast)
         FCT=(FC/FT)[:sl//2]
         a=FCT.real
         b=FCT.imag
         p = self[0]
-        t = self.data[self.T_str][p.i_cast]
+        if cast is None:
+            t = self.data[self.T_str][p.i_cast]
+        elif cast == 'up':
+            t = self.data[self.T_str][p.i_up]
+        else:
+            t = self.data[self.T_str][p.i_down]
         dT=np.diff(t).mean()
         fn=0.5*1./dT
         omega=np.arange(sl/2)*fn/float(sl/2)*2.*np.pi
