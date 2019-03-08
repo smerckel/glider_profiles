@@ -80,6 +80,14 @@ class ThermalLag(iterprofiles.ProfileSplitter):
         self.data['Ccor'] = Cp
         self.data['S'] = fast_gsw.SA(Cp, T, self.data["pressure"]*10, lon, lat)
 
+    def apply_short_time_mismatch(self, tau):
+        if not 'Craw' in self.data.keys():
+            self.data['Craw'] = self.data['C'].copy()
+        lf = filters.LagFilter(1, tau)
+        self.data['C'] = lf.filter(self.data['time'], self.data['Craw'])
+
+        
+
     def cost_function(self, x, Cparameter, Tparameter, lon ,lat):
         self.apply_thermal_lag_correction(*x, Cparameter=Cparameter, Tparameter=Tparameter,
                                           lon=lon, lat=lat)

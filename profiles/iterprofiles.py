@@ -16,7 +16,9 @@ from collections import namedtuple
 import numpy as np
 from scipy.signal import csd, coherence, detrend
 from scipy.signal.spectral import _fft_helper
+from scipy.interpolate import interp1d
 from functools import reduce
+
 from . import filters
 
 profile_integrated = namedtuple("profile_integrated","t C c0 c1 H0 H1 H")
@@ -295,7 +297,7 @@ class ProfileSplitter(list):
         try:
             return self.data[a]
         except KeyError:
-            raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, x))
+            raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, a))
     
     def set_window_size(self,window_size):
         ''' sets window size used in the moving averaged smoother of the pressure rate
@@ -324,14 +326,70 @@ class ProfileSplitter(list):
         ''' Set depth range a profile minimally should have '''
         self.required_depth_range=required_depth_range
 
-    def split_profiles(self,data=None):
-        ''' splits the data into separate profiles. This method should be called before this object can do anything useful.'''
+    def split_profiles(self,data=None, interpolate=False):
+        ''' Splits data into separate profiles. 
+        
+        Parameters
+        ----------
+        data : data dictionary or None
+            a dictionary with data, and at least "time" and "pressure" fields. If None, then
+            the data dictionary supplied to the constructor is used.
+        interpolate : boolean (Default: False)
+            interpolates time and pressure data prior to splitting the profiles
+          
+        Notes
+        -----
+        The method relies on detecting changes in the filtered depth rate. If, however, data
+        are provided, that have down casts, or up casts only, then this fails. A workaround
+        is to interpolate the time and pressure data first, then split, and remap the indices
+        to the original time stamps. This is achieved by setting interpolate to True.
+
+        It is recommnended to leave interpolate equal to False, unless you have data that contain
+        either down or up casts.
+        
+        This method should be called before this object can do anything useful.'''
         self.data=data or self.data
         t=self.data[ProfileSplitter.T_str]
         P=self.data[ProfileSplitter.P_str]
-        x,xx=self.get_indices(t,P)
-        for i_down,i_up in zip(x,xx):
-            self.append(Profile(self.data,i_down,i_up,self.T_str,self.P_str))
+        if interpolate:
+            dt = min(np.median(np.diff(t)), 4)
+            ti = np.arange(t.min(), t.max()+dt, dt)
+            Pi = np.interp(ti, t, P)
+            tfun = interp1d(t, np.arange(t.shape[0]))
+            ifun = lambda i: self.slice_fun((tfun(ti[i])+0.5).astype(int))
+        else:
+            ti = t
+            Pi = P
+        i_down, i_up = self.get_indices(ti,Pi)
+        for _i_down, _i_up in zip(i_down, i_up):
+            if interpolate:
+                s_down = ifun(_i_down)
+                s_up = ifun(_i_up)
+            else:
+                s_down = self.slice_fun(_i_down)
+                s_up = self.slice_fun(_i_up)
+            self.append(Profile(self.data,
+                                np.arange(s_down.start, s_down.stop), # convert slices to index numbers
+                                np.arange(s_up.start, s_up.stop),     # other methods rely on this.
+                                self.T_str,self.P_str))
+
+    def slice_fun(self, idx):
+        ''' Returns index list as a slice
+
+        Parameters
+        ----------
+        idx : array of integers
+            data indices
+        
+        Returns
+        -------
+        slice : slice object
+             slice with intial and last data indices. If idx is empty, a slice(0,0) is returned.
+        '''
+        if idx.shape[0]:
+            return slice(idx[0], idx[-1])
+        else:
+            return slice(0,0)
 
     def get_indices(self,t,P):
         ''' This method de factor splits the profiles by finding the for each
@@ -340,7 +398,8 @@ class ProfileSplitter(list):
             The method is not intended to be called directly, but from self.split_profiles()
         '''
         _t=t-t[0]
-        dPdT=np.gradient(P)/np.gradient(_t)
+        dT = np.gradient(_t)
+        dPdT=np.gradient(P)/dT
         window=np.ones(self.window_size,float)/float(self.window_size)
         dPdT_filtered=np.convolve(dPdT,window,'same')
         idx_down=self.__get_casts(dPdT_filtered,P,"down")
