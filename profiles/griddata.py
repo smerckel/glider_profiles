@@ -79,8 +79,8 @@ average value. Data between blocks are interpolated linearly.
             #vm=np.median(self.C[v])
             try:
                 vi[i,j]=vm
-            except ValueError: # happens when i or j are nan (out of range)
-                pass
+            except (ValueError, IndexError): # happens when i or j are
+                                             # nan (out of range)
         vi = self.__interpolate_grid(ti,zi,vi,dz,dt,max_span)
         self.ti=ti
         self.zi=zi
