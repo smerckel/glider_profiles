@@ -35,24 +35,20 @@ class ThermalLag(iterprofiles.ProfileSplitter):
     '''
     def __init__(self,data, **kwds):
         iterprofiles.ProfileSplitter.__init__(self, data, **kwds)
-        self.clear_mask()
         self.thermal_lag_filter = filters.ThermalLagFilter(1,1,1)
         self.gamma = 1.0 # about correct for C in mS/cm
-        
+        self.mask=None
 
-    def clear_mask(self, dz = 0.1):
-        P = self.data['pressure']*10
-        zi = np.arange(P.min(), P.max()+dz, dz)
-        mask = np.zeros_like(zi, int)
-        self.z_mask = np.ma.masked_array(zi, mask)
+    def clear_mask(self):
+        self.mask = np.zeros_like(self.data['time'], bool)
 
-    def apply_mask(self, mask_fun, operator = "|"):
-        z = self.z_mask.data
-        mask = mask_fun(z)
+    def apply_mask(self, mask, operator = "|"):
+        if self.mask is None:
+            self.clear_mask()
         if operator == "|":
-            self.z_mask.mask |= mask
+            self.mask |= mask
         elif operator == "&":
-            self.z_mask.mask &= mask
+            self.mask &= mask
         else:
             raise NotImplementedError
         
@@ -93,16 +89,22 @@ class ThermalLag(iterprofiles.ProfileSplitter):
                                           lon=lon, lat=lat)
         return np.sum([self.get_profile_score(p, "S") for p in self[1:]])
     
-    def get_profile_score(self, p, parameter = "S"):
-        S_d, z_d = p.get_downcast(parameter, "pressure")
-        S_u, z_u = p.get_upcast(parameter, "pressure")
-        z_d*=10
-        z_u*=10
-        S_d_i = np.interp(self.z_mask, z_d, S_d)
-        S_u_i = np.interp(self.z_mask, z_u[::-1], S_u[::-1])
-        dx = (S_d_i - S_u_i)**2
-        dx = np.ma.masked_array(dx, self.z_mask.mask)
-        return np.sum(dx)
+    def get_profile_score(self, p, parameter = "S", dz=0.01):
+        if self.mask is None:
+            self.clear_mask()
+        i_down = p.i_down
+        i_up = p.i_up
+        z_d = self.data['pressure'][i_down]
+        z_u = self.data['pressure'][i_up]
+        zi = np.arange(min(z_d.min(), z_u.min()), max(z_d.max(), z_u.max())+dz, dz)
+        mask_i = (np.interp(zi, z_d, self.mask[i_down])+0.5).astype(int)
+        mask_i |= (np.interp(zi, z_u[::-1], self.mask[i_up[::-1]])+0.5).astype(int)
+        mask_i = mask_i.astype(bool)
+        v_d = np.interp(zi, z_d, self.data[parameter][i_down])
+        v_u = np.interp(zi, z_u[::-1], self.data[parameter][i_up[::-1]])
+        dx = (v_d.compress(~mask_i)-v_u.compress(~mask_i))**2
+        return sum(dx)
+
 
 
 
