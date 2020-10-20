@@ -2,6 +2,9 @@
 dbd2asc.py
 setup.py
 profiles/__init__.py
+profiles/ctd.py
 profiles/filters.py
+profiles/griddata.py
+profiles/iterprofiles.py
 profiles/profiles.py
 profiles/thermocline.py

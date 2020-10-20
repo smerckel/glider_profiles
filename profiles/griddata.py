@@ -81,6 +81,7 @@ average value. Data between blocks are interpolated linearly.
                 vi[i,j]=vm
             except (ValueError, IndexError): # happens when i or j are
                                              # nan (out of range)
+                print("Out of range (i,j) = ({},{})".format(i,j))
         vi = self.__interpolate_grid(ti,zi,vi,dz,dt,max_span)
         self.ti=ti
         self.zi=zi
