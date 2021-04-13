@@ -88,9 +88,11 @@ class ThermalLag(iterprofiles.ProfileSplitter):
         if self.mask is None:
             self.clear_mask()
         if operator == "|":
-            self.mask |= mask
+            #self.mask |= mask
+            np.bitwise_or(self.mask,bool(mask))
         elif operator == "&":
-            self.mask &= mask
+            #self.mask &= mask
+            np.bitwise_and(self.mask,bool(mask))
         else:
             raise NotImplementedError
         
