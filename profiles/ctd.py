@@ -1,8 +1,12 @@
 from functools import partial
+from collections import namedtuple
 
 import numpy as np
+import matplotlib.pyplot as plt
 from scipy.optimize import fmin
 from scipy.interpolate import pchip
+
+import dbdreader
 from profiles import iterprofiles, filters
 try:
     import fast_gsw
@@ -14,6 +18,8 @@ except ImportError:
         SA = fast_gsw.SA_from_SP(SP, p, lon, lat)
         return SA
     fast_gsw.SA = __SA
+
+CalibrationResult = namedtuple("CalibrationResult", "alpha beta tau number_of_profiles")
     
 
 class ThermalLag(iterprofiles.ProfileSplitter):
@@ -301,3 +307,143 @@ class ThermalLagFreeFlush(ThermalLag):
         Cp = C + Delta_C
         self.data['Ccor'] = Cp
         self.data['S'] = fast_gsw.SA(Cp, T, self.data["pressure"]*10, lon, lat)
+
+class CTDprofileCalibrate(object):
+    ''' CTDprofileCalibrate
+
+    Class to facilitate calibrating the CTD per profile.
+
+    Parameters
+    ----------
+    lat_c : latitude (decimal degree) or None
+    lon_c : longitude (decimal degree) or None
+    
+    if lat_c == lon_c == None, then the coordinates are retrieved from the gliderdata.
+
+    '''
+    def __init__(self, lat_c=None, lon_c=None):
+        self.lat_c = lat_c
+        self.lon_c = lon_c
+        self.thermal_lag_model = {}
+
+    def load_data(self, glider, path, dt=1, short_time_correction=None):
+        '''loads required data from particular glider from dbd/ebd files
+
+        Parameters
+        ----------
+        glider : str 
+            id string for storing data loaded. 
+        path : str
+            path to where dbd and ebd files are found
+        dt : float (default 1.0)
+            makes time series equidistant with this time interval
+        short_time_correction : float or None (default None)
+            applies short_time_correction to C and T measurements. If None, no correction is applied.
+        
+        Note
+        ----
+
+        The glider id is soley used to refer to the proper data
+        set. It is possible to load different segments of data for a
+        single glider to and have each segment calibrated. The glider
+        id lets you retrieve the correct data set.
+        '''
+        dbd = dbdreader.MultiDBD(pattern=path)
+        tctd, C, T, D, lat, lon = dbd.get_CTD_sync("m_gps_lat", "m_gps_lon")
+        lat_c = self.lat_c or lat.mean()
+        lon_c = self.lon_c or lon.mean()
+        SA = fast_gsw.SA(C*10, T, D*10, lon_c, lat_c)
+        CT = fast_gsw.CT(C*10, T, D*10, lon_c, lat_c)
+        pot_rho = fast_gsw.pot_rho(C*10, T, D*10, lon_c, lat_c)
+        data = dict(time=tctd, pressure=D, T=T, C=C*10, P=D*10, S = SA, S0=SA.copy(), CT=CT, CT0=CT.copy(),
+                    pot_rho=pot_rho, pot_rho0=pot_rho.copy())
+
+        tl = ThermalLag(data, lat=lat_c, lon=lon_c)
+        tl.interpolate_data(dt=1)
+        tl.split_profiles()
+        if short_time_correction:
+            tl.apply_short_time_mismatch(short_time_correction)
+        self.thermal_lag_model[glider] = (tl, short_time_correction)
+
+    def calibrate(self, glider, z_min=None, z_max=None, **options):
+        ''' Calibrates CTD
+
+        Parameters
+        ----------
+        glider : str
+            glider id, see also documentation of load_data()
+        z_min : float or None:
+            minimum depth of measurements to consider in the cost function
+        z_max : float or None:
+            maximum depth of measurements to consider in the cost function
+        **options: dictionary with key words, passed to the minimisation model.
+        
+        Returns
+        -------
+            namedtuple tuple with alpha, beta, short_time_correction and number_of_profiles.
+        '''
+        tl, short_time_correction = self.thermal_lag_model[glider]
+        if not z_min is None or not z_max is None:
+            z_min = z_min or 0
+            z_max = z_max or 1200
+            z = tl.data["P"]
+            condition = np.logical_or(z<z_min,
+                                      z>z_max)
+            tl.clear_mask()
+            tl.apply_mask(condition)
+            
+        alpha, beta = tl.calibrate(initial_values=[0.05, 0.057], **options)
+        number_of_profiles = len(tl)
+        return CalibrationResult(alpha, beta, short_time_correction, number_of_profiles)
+
+    def get_profiles(self, glider):
+        '''
+        Convenience method, that returns the profiles for a specific glider id
+
+        Parameters
+        ----------
+        glider : str
+            glider id, see also documentation of load_data()
+
+        Returns
+        -------
+            ThermalLag instance (derived from ProfileSplitter)
+        '''
+        prfls, _ = self.thermal_lag_model[glider]
+        return prfls
+
+
+def create_figure():
+    f, ax = plt.subplots(1,4)
+    for i in range(2,4):
+        ax[i].sharey(ax[1])
+    return f, ax
+
+
+def STplots(p, ax, color=None, offset=0, suffix='', **kwds):
+    xd, yd = p.get_downcast(f"CT{suffix}", f"S{suffix}")
+    xu, yu = p.get_upcast(f"CT{suffix}", f"S{suffix}")
+    options = dict(alpha=0.5)
+    options.update(kwds)
+    if color:
+        options['color']=color
+    ax[0].plot(yd+offset, xd, **options)
+    ax[0].plot(yu+offset, xu, **options)
+    ax[0].set_xlabel('S')
+    ax[0].set_ylabel('CT (degree Celsius)')
+    f = lambda x, y : (x+offset, y)
+    ax[1].plot(*f(*p.get_downcast(f"CT{suffix}", "P")), **options)
+    ax[2].plot(*f(*p.get_downcast(f"S{suffix}", "P")), **options)
+    ax[3].plot(*f(*p.get_downcast(f"pot_rho{suffix}", "P")), **options)
+    ax[1].plot(*f(*p.get_upcast(f"CT{suffix}", "P")), ls='--', **options)
+    ax[2].plot(*f(*p.get_upcast(f"S{suffix}", "P")), ls='--', **options)
+    ax[3].plot(*f(*p.get_upcast(f"pot_rho{suffix}", "P")), ls='--', **options)
+    ax[1].set_ylabel('Depth (m)')
+    ax[2].set_ylabel('Depth (m)')
+    ax[1].set_xlabel('CT (degree C)')
+    ax[2].set_xlabel('SA (-)')
+    ax[3].set_xlabel('Pot. Density (kg m^{-3})')
+    ax[1].yaxis.set_inverted(True)
+    ax[2].yaxis.set_inverted(True)
+    ax[3].yaxis.set_inverted(True)
+
