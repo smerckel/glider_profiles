@@ -63,13 +63,15 @@ class ThermalLag(iterprofiles.ProfileSplitter):
     situations where there is no clear or strong temperature gradient.
 
     '''
-    def __init__(self,data, method='S-profile', **kwds):
+    def __init__(self,data, method='S-profile', lat=None, lon=None, **kwds):
         iterprofiles.ProfileSplitter.__init__(self, data, **kwds)
         self.thermal_lag_filter = filters.ThermalLagFilter(1,1,1)
         self.gamma = 1.0 # about correct for C in mS/cm
         self.method = method
         self.mask = None
-            
+        self.lat = lat
+        self.lon = lon
+        
     def clear_mask(self):
         ''' Clears the mask and sets the size of the mask equal to the time vector.'''
         self.mask = np.zeros_like(self.data['time'], bool)
@@ -94,7 +96,45 @@ class ThermalLag(iterprofiles.ProfileSplitter):
         else:
             raise NotImplementedError
         
-    def calibrate(self, lat = 54, lon =8, initial_values = [0.02, 0.03], Cparameter="C", Tparameter="T", method=None, **kwds):
+    def calibrate(self, initial_values = [0.02, 0.03], Cparameter="C", Tparameter="T", method=None, lat=None, lon=None, **kwds):
+        '''calibrate
+
+        Method that calibrates the coefficients of the thermal lag model.
+
+        Parameters
+        ----------
+        initial_values : tuple of floats
+            initial values for alpha and beta
+        Cparameter : str 
+            key of conductivity values in self.data dictionary
+        Tparameter : str 
+            key of temperature values in self.data dictionary
+        method : str {"S-profile", "ST-diagram", None}
+            sets method of minimisation method, see also constructor help.
+            If None, the constructor set value is used.
+        lat, lon : float or None
+            sets the latitude and longitude for evaluation of SA.
+        **kwds : dictionary of options passed to the method function.
+
+        For ST-diagram: 
+        N : int
+            number of nodes to represent the ST-curve.
+        
+        Notes
+        -----
+
+        Two methods are provided to minimise a cost function. Because
+        most of the action happens at temperature interfaces, this
+        affects mostly the S-T diagram in a small region, and a
+        minimisation method might not work as well as expected.  For
+        specific sites, such as a stratified North Sea, it may be
+        beneficial to use S-profile method on selected profiles.
+
+        '''
+        lat = lat or self.lat
+        lon = lon or self.lon
+        if (lat is None) or (lon is None):
+            raise ValueError("No latitude/longitude coordinates specified.")
         method = method or self.method
         methods = {"S-profile":self.get_profile_score_S_profile,
                    "ST-diagram":self.get_profile_score_ST_diagram}
@@ -125,6 +165,7 @@ class ThermalLag(iterprofiles.ProfileSplitter):
         self.data['S'] = fast_gsw.SA(Cp, T, self.data["pressure"]*10, lon, lat)
         self.data['CT'] = fast_gsw.CT(Cp, T, self.data["pressure"]*10, lon, lat)
         self.data['pot_rho'] = fast_gsw.pot_rho(Cp, T, self.data["pressure"]*10, lon, lat)
+        self.data['rho'] = fast_gsw.rho(Cp, T, self.data["pressure"]*10, lon, lat)
         
     def apply_short_time_mismatch(self, tau):
         if not 'Craw' in self.data.keys():
@@ -178,6 +219,7 @@ class ThermalLag(iterprofiles.ProfileSplitter):
 
 
 class ThermalLagFreeFlush(ThermalLag):
+
     '''Class to correct for the thermal lag issue for free flush CTD.
 
     The difference with the pumped ThermalLag is that depending on the speed of
