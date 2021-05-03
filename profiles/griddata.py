@@ -29,7 +29,7 @@ average value. Data between blocks are interpolated linearly.
         self.C=C
         self.ti = self.zi = self.Ci = None
 
-    def griddata(self, dt=300, dz=0.5, max_span=30*60, zi=None):
+    def griddata(self, dt=300, dz=0.5, max_span=30*60, zi=None, ti=None, zinterp=False):
         '''griddata
         ========
 
@@ -42,6 +42,8 @@ average value. Data between blocks are interpolated linearly.
             dz: grid size in z dimension
             max_span: time over which data are allowed to be interpolated.
             zi: interpolated z dimension (optional)
+            ti: interpolated t dimension (optional)
+            zinterp : if true interpolation along z axis (default false interpolation along t)
 
         Returns
         -------
@@ -55,7 +57,8 @@ average value. Data between blocks are interpolated linearly.
         #idx=np.where(self.z<0)[0]
         #self.z[idx]=0.
         #
-        ti=np.arange(self.t.min(),self.t.max()+dt,dt)
+        if ti is None:
+          ti=np.arange(self.t.min(),self.t.max()+dt,dt)
         if zi is None:
             zi = np.arange(0,self.z.max()+dz,dz)
         nt=ti.shape[0]
@@ -81,8 +84,11 @@ average value. Data between blocks are interpolated linearly.
                 vi[i,j]=vm
             except (ValueError, IndexError): # happens when i or j are
                                              # nan (out of range)
-                print("Out of range (i,j) = ({},{})".format(i,j))
-        vi = self.__interpolate_grid(ti,zi,vi,dz,dt,max_span)
+                 print("Out of range (i,j) = ({},{})".format(i,j))
+        if zinterp :
+          vi = self.__interpolate_grid(zi,ti,vi.T,dt,dz,max_span).T
+        else :
+          vi = self.__interpolate_grid(ti,zi,vi,dz,dt,max_span)
         self.ti=ti
         self.zi=zi
         self.Ci=vi
