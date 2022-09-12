@@ -3,56 +3,13 @@ A module for splitting glider data into profiles
 
 Provides:
       ProfileSplitter()
-      CrossSpectral()
 
-8 October 2013
-
-lucas.merckelbach@hzg.de
-
+lucas.merckelbach@hereon.de
 '''
-
 from collections import namedtuple
 
 import numpy as np
-from scipy.signal import csd, coherence, detrend
-from scipy.signal.spectral import _fft_helper
 from scipy.interpolate import interp1d
-from functools import reduce
-
-from . import filters
-
-profile_integrated = namedtuple("profile_integrated","t C c0 c1 H0 H1 H")
-
-
-def gain_and_delay(t, x, y, nperseg):
-    ''' computes a coherence spectrum of H, assuming
-    
-        Y(s) = H(s) * X(s)
-  
-        returns omega, gain and phase delay.
-
-    '''
-    _n = len(t)
-    mantis = int(np.log2(_n))
-    n = 2**mantis
-    t=t[:n]
-    x = x[:n]
-    y = y[:n]
-    dt = np.diff(t).mean()
-    fs = 1/dt
-    if nperseg%2:
-        num_freqs = (nperseg+1)//2
-    else:
-        num_freqs = nperseg//2 + 1
-    X=_fft_helper(x,np.hanning(nperseg),lambda x: detrend(x,type='constant'),nperseg, nperseg//2, nperseg,'oneside')[...,:num_freqs]*2
-    Y=_fft_helper(y,np.hanning(nperseg),lambda x: detrend(x,type='constant'),nperseg, nperseg//2, nperseg,'oneside')[...,:num_freqs]*2
-
-    YX = (Y/X).mean(axis=0)
-    a=YX.real
-    b=YX.imag
-    fn=0.5*fs
-    omega=np.arange(num_freqs)*fn/float(num_freqs)*2.*np.pi
-    return omega,a**2+b**2,np.arctan(b/a)
 
 
 class Profile(object):
@@ -68,9 +25,6 @@ class Profile(object):
         self.t_down=t[self.i_down].mean()
         self.t_up=t[self.i_up].mean()
         self.t_cast=0.5*(self.t_down+self.t_up)
-        
-    def __call__(self,parameter,co_parameter=None):
-        pass
 
     def __get_cast_data(self,i,parameter,co_parameter,despike=False):
         if co_parameter==None:
@@ -104,7 +58,12 @@ class Profile(object):
             if co_parameter:
                 x=self.despike(x)
             y=self.despike(y)
-        return x,y
+        if co_parameter is None:
+            s = ['t', parameter]
+        else:
+            s = [parameter, co_parameter]
+        ProfileData = namedtuple("ProfileData", s)
+        return ProfileData(x,y)
             
     def get_cast(self,parameter,co_parameter=None,despike=False):
         return self.__get_cast_data(self.i_cast,parameter,co_parameter,despike)
@@ -115,126 +74,13 @@ class Profile(object):
     def get_downcast(self,parameter,co_parameter=None,despike=False):
         return self.__get_cast_data(self.i_down,parameter,co_parameter,despike)
 
-    def get_downcast_integrated(self,parameter,levels=[],despike=False,min_values=3, avg_distance=1):
-        return self.__get_cast_integrated(parameter,levels,'down',despike,min_values, avg_distance)
 
-    def get_upcast_integrated(self,parameter,levels=[],despike=False,min_values=3, avg_distance=1):
-        return self.__get_cast_integrated(parameter,levels,'up',despike,min_values, avg_distance)
-    
-    def get_downcast_gradient(self,parameter,levels=[],despike=False,min_values=3):
-        return self.__get_cast_gradient(parameter,levels,'down',despike,min_values)
-
-    def get_upcast_gradient(self,parameter,levels=[],despike=False,min_values=3):
-        return self.__get_cast_gradient(parameter,levels,'up',despike,min_values)
-    
     def despike(self,x):
-        xp=x.copy()
-        n=xp.shape[0]
-        for i in range(1,n-1):
-            xp[i]=np.median(x[i-1:i+2])
+        xp = x.copy() # to return, keeps same size.
+        y=np.vstack([x[:-2],x[1:-1],x[2:]])
+        xp[1:-1] = np.median(y, axis=0)
         return xp
-
-    def __get_cast_gradient(self,parameter,levels,direction,despike,min_values):
-        if direction=="up":
-            get_fun=self.get_upcast
-
-        else:
-            get_fun=self.get_downcast
-            fc=1
-        s=int(direction=="down")*2-1 # stride -1 for upcast, +1 for downcast
-        
-        t,x=get_fun(parameter)
-        if despike:
-            x=self.despike(x)
-        d=get_fun(self.P_str)[1]*10
-        t=t[::s]
-        x=x[::s]
-        d=d[::s]
-        
-        i=np.where(np.diff(d)>0)[0]
-        iall=np.hstack([i,[i[-1]+1]])
-        if levels:
-            top_level,bottom_level=get_fun(levels[0],levels[1])
-            i_section=iall.compress(np.logical_and(d[iall]>=top_level[iall],
-                                                   d[iall]<=bottom_level[iall]))
-        else:
-            i_section=iall
-        if len(i_section)>=min_values:
-            dxdz=np.polyfit(x[i_section],d[i_section],1)[0]
-        else:
-            dxdz=0
-        return dxdz
     
-    def get_level(self, get_fun, level):
-        try:
-            _, z = get_fun(level)
-        except ValueError:
-            z = level
-        else:
-            z=z.mean()
-        return z
-    
-    def __get_cast_integrated(self,parameter,levels,direction,despike,min_values, avg_distance):
-        # avg_distance: to determine the value on a level (top level/ bottom level, a median value is computed within avg_distance
-        
-        if direction=="up":
-            get_fun=self.get_upcast
-        else:
-            get_fun=self.get_downcast
-
-        s=int(direction=="down")*2-1 # stride -1 for upcast, +1 for downcast
-        
-        t,x=get_fun(parameter)
-        if despike:
-            x=self.despike(x)
-        d=get_fun(self.P_str)[1]*10
-        t=t[::s]
-        x=x[::s]
-        d=d[::s]
-        
-        i=np.where(np.diff(d)>0)[0]
-        iall=np.hstack([i,[i[-1]+1]])
-        if levels:
-            try:
-                lvl = self.get_level(get_fun, levels)
-                top_level = lvl - avg_distance/2
-                bottom_level = lvl + avg_distance/2
-            except (TypeError, ValueError) as e:
-                top_level = self.get_level(get_fun, levels[0])
-                bottom_level = self.get_level(get_fun, levels[1])
-            i_section=iall.compress(np.logical_and(d[iall]>=top_level,
-                                                   d[iall]<=bottom_level))
-        else:
-            i_section=iall
-            top_level = d.min()
-            bottom_level = d.max()
-        
-        I=np.trapz(x[i_section],d[i_section])
-        if len(i_section)<min_values:
-            I=0
-            H=1
-            H_top=0
-            H_bottom=0
-            top_value=0
-            bottom_value=0
-            tm=t.mean()
-        else:
-            H=(d[i_section[0]]-d[i_section[-1]])
-            tm=t[i_section].mean()
-            _i=iall.compress(abs(d[iall]-top_level)<avg_distance/2)
-            if len(_i):
-                top_value=np.median(x[_i])
-            else:
-                top_value=0
-            _i=iall.compress(abs(d[iall]-bottom_level)<avg_distance/2)
-            if len(_i):
-                bottom_value=np.median(x[_i])
-            else:
-                bottom_value=0
-            H_top=d[i_section[0]]
-            H_bottom=d[i_section[-1]]
-        return profile_integrated(tm,I,top_value,bottom_value,H_top,H_bottom, -H)
-
 
 
     
@@ -298,7 +144,7 @@ class ProfileSplitter(list):
             return self.data[a]
         except KeyError:
             raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, a))
-    
+
     def set_window_size(self,window_size):
         ''' sets window size used in the moving averaged smoother of the pressure rate
         '''
@@ -356,24 +202,56 @@ class ProfileSplitter(list):
             ti = np.arange(t.min(), t.max()+dt, dt)
             Pi = np.interp(ti, t, P)
             tfun = interp1d(t, np.arange(t.shape[0]))
-            ifun = lambda i: self.slice_fun((tfun(ti[i])+0.5).astype(int))
+            ifun = lambda i: self._slice_fun((tfun(ti[i])+0.5).astype(int))
         else:
             ti = t
             Pi = P
-        i_down, i_up = self.get_indices(ti,Pi)
+        i_down, i_up = self._get_indices(ti,Pi)
         for _i_down, _i_up in zip(i_down, i_up):
             if interpolate:
                 s_down = ifun(_i_down)
                 s_up = ifun(_i_up)
             else:
-                s_down = self.slice_fun(_i_down)
-                s_up = self.slice_fun(_i_up)
+                s_down = self._slice_fun(_i_down)
+                s_up = self._slice_fun(_i_up)
             self.append(Profile(self.data,
                                 np.arange(s_down.start, s_down.stop), # convert slices to index numbers
                                 np.arange(s_up.start, s_up.stop),     # other methods rely on this.
                                 self.T_str,self.P_str))
 
-    def slice_fun(self, idx):
+    def remove_prematurely_ended_dives(self,threshold=3):
+        ''' Remove up/down yo pairs for
+            which have a depth that is more than <threshold> m shallower than
+            the previous and next dive.
+
+        Parameters
+        ----------
+        threshold : float {3}
+            If profile is <threshold> m shallower than the previous and next profile, it is considered permaturely ended.
+
+        '''
+        removables=[]
+        for p,c,n in zip(self[:-2],self[1:-1],self[2:]):
+            max_depth=(p.get_cast("pressure")[1].max() + \
+                       n.get_cast("pressure")[1].max())*0.5
+            if c.get_cast("pressure")[1].max()<max_depth-threshold/10:
+                removables.append(c)
+        for r in removables:
+            self.remove(r)
+
+    def get_upcasts(self,parameter, co_parameter=None, despike=False):
+        return tuple([p.get_upcast(parameter, co_parameter=None, despike=despike) for p in self])
+
+    def get_dowcasts(self,parameter,co_parameter=None,despike=False):
+        return tuple([p.get_downcast(parameter, co_parameter=None, despike=despike) for p in self])
+
+    def get_casts(self,parameter,co_parameter=None,despike=False):
+        return tuple([p.get_cast(parameter, co_parameter=co_parameter, despike=despike) for p in self])
+    
+            
+    # Private methods
+            
+    def _slice_fun(self, idx):
         ''' Returns index list as a slice
 
         Parameters
@@ -391,8 +269,8 @@ class ProfileSplitter(list):
         else:
             return slice(0,0)
 
-    def get_indices(self,t,P):
-        ''' This method de factor splits the profiles by finding the for each
+    def _get_indices(self,t,P):
+        ''' This method de facto splits the profiles by finding the for each
             profile the down cast indices, and up cast indices.
 
             The method is not intended to be called directly, but from self.split_profiles()
@@ -402,14 +280,14 @@ class ProfileSplitter(list):
         dPdT=np.gradient(P)/dT
         window=np.ones(self.window_size,float)/float(self.window_size)
         dPdT_filtered=np.convolve(dPdT,window,'same')
-        idx_down=self.__get_casts(dPdT_filtered,P,"down")
-        idx_up=self.__get_casts(dPdT_filtered,P,"up")
+        idx_down=self._get_casts(dPdT_filtered,P,"down")
+        idx_up=self._get_casts(dPdT_filtered,P,"up")
         if self.remove_incomplete_tuples:
-            idx_down,idx_up=self.__remove_incomplete_tuples(idx_down,idx_up)
+            idx_down,idx_up=self._remove_incomplete_tuples(idx_down,idx_up)
         self.dPdT=dPdT_filtered
         return idx_down,idx_up
 
-    def __remove_incomplete_tuples(self,i_down,i_up):
+    def _remove_incomplete_tuples(self,i_down,i_up):
         ''' remove incomplete up/down yo pairs '''
         kd=0
         ku=0
@@ -437,22 +315,8 @@ class ProfileSplitter(list):
             ku+=1
         return idx_down,idx_up
 
-        
-    def remove_prematurely_ended_dives(self,threshold=3):
-        ''' remove up/down yo pairs for
-            which have a depth that is more than <threshold> m shallower than
-            the previous and next dive.'''
-        removables=[]
-        for p,c,n in zip(self[:-2],self[1:-1],self[2:]):
-            max_depth=(p.get_cast("pressure")[1].max() + \
-                       n.get_cast("pressure")[1].max())*0.5
-            if c.get_cast("pressure")[1].max()<max_depth-threshold/10:
-                removables.append(c)
-        for r in removables:
-            self.remove(r)
-        
 
-    def __get_casts(self,dPdT_filtered,P,cast="up"):
+    def _get_casts(self,dPdT_filtered,P,cast="up"):
         direction=int(cast=="down")*2-1
         idx=np.where(direction*dPdT_filtered>self.threshold)[0]
         k=np.where(np.diff(idx)>1)[0]
@@ -478,340 +342,15 @@ class ProfileSplitter(list):
         self.summary['pmax']=pmaxs
         return jdx
 
-    # to be able to select data according to the mixed layer depth
-    def add_level_timeseries(self,t,z,level_name='pycnocline_depth'):
-        ''' Sets a time series of depth and a given name, for example pycnocline.
-            These depth levels can be used to limit the integration of profile
-            averaged values just to a given layer, such as top-pycnocline, or
-            2 m level - 10 m level etc.
-        '''
-        self.data[level_name]=np.interp(self.data[ProfileSplitter.T_str],t,z)
-        if level_name not in self.levels:
-            self.levels.append(level_name)
-
-    def get_downcast_integrated(self,parameter,levels=[],despike=False, avg_distance=1):
-        ''' get integrated upcast value for parameter at levels. The values at the levels are median values computed over within avg_distance m'''
-                
-        x=np.array([p.get_downcast_integrated(parameter,levels,despike, avg_distance=avg_distance)
-                    for p in self]).T
-        s={'t':x[0],
-           parameter:x[1],
-           'z1':x[4],
-           'z0':x[5],
-           "%s_z1"%(parameter):x[2],
-           "%s_z0"%(parameter):x[3],
-           "levels":levels}
-
-        profile_integrated = namedtuple("profile_integrated","t %s c0 c1 H0 H1 H"%(parameter))
-        s = profile_integrated(*x)
-        return s
-    
-    def get_upcast_integrated(self,parameter,levels=[],despike=False, avg_distance=1):
-        ''' get integrated upcast value for parameter at levels. The values at the levels are median values computed over within avg_distance m'''
-        
-        x=np.array([p.get_upcast_integrated(parameter,levels,despike, avg_distance=avg_distance)
-                    for p in self]).T
-        s={'t':x[0],
-           parameter:x[1],
-           'z1':x[4],
-           'z0':x[5],
-           "%s_z1"%(parameter):x[2],
-           "%s_z0"%(parameter):x[3],
-           "levels":levels}
-
-        profile_integrated = namedtuple("profile_integrated","t %s c0 c1 H0 H1 H"%(parameter))
-        s = profile_integrated(*x)
-        return s
-
-    # some interpolation functions:
-    def interpolate_data(self,dt = 1):
-        ''' using linear interpolation '''
-        tctd = self.data["time"]
-        ti = np.arange(tctd.min(), tctd.max()+dt, dt)
-        for k, v in self.data.items():
-            if k=="time":
-                continue
-            self.data[k] = np.interp(ti, tctd, v)
-        self.data["time"] = ti
-
-    def interpolate_data_shape_preserving(self,dt = 1):
-        ''' using cubic shape preserving interpolation '''
-        tctd = self.data["time"]
-        ti = np.arange(tctd.min(), tctd.max()+dt, dt)
-        for k, v in self.data.items():
-            if k=="time":
-                continue
-            f = pchip(tctd, v)
-            self.data[k] = f(ti)
-        self.data["time"] = ti
-        
-    def lag_filter_pressure_data(self, delay, other_pressure_parameters = []):
-        ti = self.data["time"]
-        p = ["pressure"] + other_pressure_parameters
-        LF = filters.LagFilter(1,delay)
-        for k in p:
-            self.data[k] = LF.filter(ti, self.data[k])
-
-    def get_profile(self, t):
-        ''' Get nearest profile.
-
-        For given time t, the method returns the profile that is closest in time.
-
-        Parameters:
-        -----------
-        
-        t: scalar | time in s
-
-        Returns:
-        --------
-        
-        profile that is closest in time.
-        '''
-        return self[self.get_profile_index(t)]
-    
-
-    def get_profile_index(self, t):
-        ''' Get nearest profile index.
-
-        For given time t, the method returns the profile index that is closest in time.
-
-        Parameters:
-        -----------
-        
-        t: scalar | time in s
-
-        Returns:
-        --------
-        
-        index of profile that is closest in time.
-        '''
-        cast_times = np.array([_p.t_cast for _p in self])
-        idx = np.argmin(np.abs(cast_times-t))
-        return idx
-
-
-    
-
-class Thermocline(ProfileSplitter):
-    def __init__(self,data={},window_size=9,threshold_bar_per_second=1e-3,
-                 remove_incomplete_tuples=True):
-        ProfileSplitter.__init__(self,data,window_size,threshold_bar_per_second,
-                                 remove_incomplete_tuples)
-
-    def add_buoyancy_frequency(self,rho0=1027.,window=15):
-        ''' Adds the buoyancy frequency to the self.data dictionary '''
-        W=window
-        rho=self.data['rho']
-        z=self.data[self.P_str]*10
-        dz = np.gradient(z)
-        drho = np.gradient(rho)
-        condition = np.abs(dz)>0.02 # if dz >? 2 cm compute N2, otherwise leave it nan
-        i = np.where(condition) 
-        _N2=9.81/rho0*drho[i]/dz[i]
-        _N2=np.convolve(_N2,np.ones(W)/W,'same')
-        N2 = np.zeros_like(z)*np.nan
-        N2[i] = _N2
-        self.data['N2']=N2
-
-    def thermocline_depth_maxN2(self,
-                                direction="down",
-                                N2_crit=1e-3,
-                                min_depth=5,
-                                max_depth=35,
-                                max_depth_pct=80):
-        ttcl=np.zeros(len(self),float)
-        ztcl=np.zeros(len(self),float)
-
-        for j,p in enumerate(self):
-            if direction == "down":
-                f = p.get_downcast
-            elif direction == "up":
-                f = p.get_upcast
-            else:
-                raise ValueError("direction should be up or down.")
-            t,P=f(self.P_str)
-            _, N2=f("N2")
-            condition=np.logical_and(P*10>min_depth,
-                                     np.logical_or(P*10<max_depth,P<max_depth_pct/10*P.max()))
-            condition=np.logical_and(np.isfinite(N2), condition)
-            N2_section,P_section,t_section=np.compress(condition,[N2,P,t],axis=1)
-            i=np.argmax(N2_section)
-            if N2_section[i]>N2_crit:
-                ttcl[j]=t_section[i]
-                ztcl[j]=P_section[i]*10
-            else:
-                ttcl[j]=t_section[0]
-                ztcl[j]=np.nan
-        return ttcl, ztcl
-    
-    def thermocline_depth_max_temp_gradient(self,
-                                direction="down",
-                                Tgrad_crit=0.5, # 0.5 deg/m or more
-                                min_depth=5,
-                                max_depth=35,
-                                max_depth_pct=80):
-        ttcl=np.zeros(len(self),float)
-        ztcl=np.zeros(len(self),float)
-
-        for j,p in enumerate(self):
-            if direction == "down":
-                f = p.get_downcast
-            elif direction == "up":
-                f = p.get_upcast
-            else:
-                raise ValueError("direction should be up or down.")
-            t,P=f(self.P_str)
-            _, T=f("T")
-            dTdz = np.gradient(T)/np.gradient(P)/10.
-            condition=np.logical_and(P*10>min_depth,
-                                     np.logical_or(P*10<max_depth,P<max_depth_pct/10*P.max()))
-            condition=np.logical_and(np.isfinite(dTdz), condition)
-            dTdz_section,P_section,t_section=np.compress(condition,[dTdz,P,t],axis=1)
-            i=np.argmax(dTdz_section)
-            if dTdz_section[i]>Tgrad_crit:
-                ttcl[j]=t_section[i]
-                ztcl[j]=P_section[i]*10
-            else:
-                ttcl[j]=t_section[0]
-                ztcl[j]=np.nan
-        return ttcl, ztcl
-
-    def calc_thermocline_maxN2(self,N2_crit=1e-3,
-                               min_depth=5,
-                               max_depth=35,
-                               max_depth_pct=80):
-        ttcl=np.zeros((2,len(self)),float)
-        ztcl=np.zeros((2,len(self)),float)
-
-        for j,p in enumerate(self):
-            for k in range(2):
-                f=[p.get_downcast,p.get_upcast]
-                t,P=f[k](self.P_str)
-                N2=f[k]("N2")[1]
-                condition=np.logical_and(P*10>min_depth,
-                                         np.logical_or(P*10<max_depth,P<max_depth_pct/10*P.max()))
-                N2_section,P_section,t_section=np.compress(condition,[N2,P,t],axis=1)
-                i=np.argmax(N2_section)
-                if N2_section[i]>N2_crit:
-                    ttcl[k,j]=t_section[i]
-                    ztcl[k,j]=P_section[i]
-                else:
-                    ttcl[k,j]=t_section[0]
-                    ztcl[k,j]=0
-        self.add_level_timeseries(ttcl[0],ztcl[0],level_name='pycnocline_depth_downcast')
-        self.add_level_timeseries(ttcl[1],ztcl[1],level_name='pycnocline_depth_upcast')
-        self.add_level_timeseries(ttcl.mean(axis=0),ztcl.mean(axis=0),level_name='pycnocline_depth')
-
-    def calc_thermocline_temperature(self,dT=0.1):
-        ttcl=np.zeros((2,len(self)),float)
-        ztcl=np.zeros((2,len(self)),float)
-
-        for j,p in enumerate(self):
-            f=[p.get_downcast,p.get_upcast]
-            for k in range(2):
-                t,P=f[k](self.P_str)
-                T=f[k]("T")[1]
-                counts,bins=np.histogram(T,10)
-                Tc=(bins[1:]+bins[:-1])*0.5
-                ttcl[k,j]=t.mean()
-                if Tc.ptp()<dT:
-                    ztcl[k,j]=np.nan
-                else:
-                    Tmean=Tc.mean()
-                    counts_warm=counts.compress(Tc>Tmean)
-                    Tc_warm=Tc.compress(Tc>Tmean)
-                    T_warm=Tc_warm[np.argmax(counts_warm)]
-                    counts_cold=counts.compress(Tc<Tmean)
-                    Tc_cold=Tc.compress(Tc<Tmean)
-                    T_cold=Tc_cold[np.argmax(counts_cold)]
-                    Tmean=(T_warm+T_cold)/2.
-                    i=np.argmin(np.abs(T-Tmean))
-                    ztcl[k,j]=P[i]*10
-        
-        self.add_level_timeseries(ttcl.T.ravel(),ztcl.T.ravel(),level_name='pycnocline_depth')
-        return ttcl,ztcl
         
 
-class CrossSpectral(ProfileSplitter):
-    def __init__(self,data={},window_size=9,threshold_bar_per_second=1e-3):
-        ProfileSplitter.__init__(self,data,window_size,threshold_bar_per_second)
-    
-    def ideal_length(self,n):
-        return 2**int(np.log2(n))
+import dbdreader
 
-    def series_length(self, cast):
-        if cast is None:
-            series_length = [p.i_cast.shape[0] for p in self]
-        elif cast =='up':
-            series_length = [p.i_up.shape[0] for p in self]
-        else:
-            series_length = [p.i_down.shape[0] for p in self]
-        min_series_length = min(series_length)
-        ideal_series_length = self.ideal_length(min_series_length)
-        return ideal_series_length
+dbd_path = "/home/lucas/gliderdata/nsb3_201907/hd/comet-2019-203-05-000.?bd"
+dbd = dbdreader.MultiDBD(dbd_path)
+tctd, C, T, D, flntu_turb = dbd.get_CTD_sync("sci_flntu_turb_units")
+data = dict(time=tctd, pressure=D, C=C*10, T=T, P=D*10, spm=flntu_turb)
 
-    def do_ffts(self,parameter,fft_length, cast):
-        fftC = []
-        for p in self:
-            if cast is None:
-                n = p.i_cast.shape[0]//2
-            elif cast == 'up':
-                n = p.i_up.shape[0]//2
-            else:
-                n = p.i_down.shape[0]//2
-            j0 = n - fft_length//2
-            j1 = n + fft_length//2
-            if cast is None:
-                _, C = p.get_cast(parameter)
-            elif cast == 'up':
-                _, C = p.get_upcast(parameter)
-            else:
-                _, C = p.get_downcast(parameter)
-            Cw = C[j0:j1]
-            fftC.append(np.fft.fft(Cw))
-        fftC = np.array(fftC)
-        return fftC.mean(axis = 0)
+ps = ProfileSplitter(data)
+ps.split_profiles()
 
-    def Hs(self,param0,param1, cast=None):
-        ''' Computes coherence based on time series
-            per cast. Consider the .coherence() method for the same
-            thing, but then on all data.
-
-            if cast is None: then use up and down casts
-            other options: cast='up' cast = 'down'
-
-        '''
-        print("Consider using the .coherence() method")
-
-        sl=self.series_length(cast)
-
-        FC = self.do_ffts(param0, sl, cast)
-        FT = self.do_ffts(param1, sl, cast)
-        FCT=(FC/FT)[:sl//2]
-        a=FCT.real
-        b=FCT.imag
-        p = self[0]
-        if cast is None:
-            t = self.data[self.T_str][p.i_cast]
-        elif cast == 'up':
-            t = self.data[self.T_str][p.i_up]
-        else:
-            t = self.data[self.T_str][p.i_down]
-        dT=np.diff(t).mean()
-        fn=0.5*1./dT
-        omega=np.arange(sl/2)*fn/float(sl/2)*2.*np.pi
-        print("sample length:",sl)
-        return omega,a**2+b**2,np.arctan(b/a)
-
-    def coherence(self, param0, param1, nperseg):
-        ''' computes a coherence spectrum of H, assuming
-
-        Y(s) = H(s) * X(s)
-  
-        returns omega, gain and phase delay.
-
-        '''
-        t = self.data["time"]
-        x = self.data[param0]
-        y = self.data[param1]
-        return gain_and_delay(t, x, y, nperseg)
