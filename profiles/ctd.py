@@ -17,7 +17,29 @@ except ImportError:
         SP = fast_gsw.SP_from_C(C,t, p)
         SA = fast_gsw.SA_from_SP(SP, p, lon, lat)
         return SA
+    
+    def __CT(C, t, p, lon, lat):
+        SP = fast_gsw.SP_from_C(C,t, p)
+        SA = fast_gsw.SA_from_SP(SP, p, lon, lat)
+        CT = fast_gsw.CT_from_t(SA, t, p)
+        return CT
+
+    def __pot_rho(C, t, p, lon, lat):
+        SP = fast_gsw.SP_from_C(C,t, p)
+        SA = fast_gsw.SA_from_SP(SP, p, lon, lat)
+        pot_rho = fast_gsw.pot_rho_t_exact(SA, t, p, 0)
+        return pot_rho
+
+    def __rho(C, t, p, lon, lat):
+        SP = fast_gsw.SP_from_C(C,t, p)
+        SA = fast_gsw.SA_from_SP(SP, p, lon, lat)
+        rho = fast_gsw.rho_t_exact(SA, t, p)
+        return rho
+
     fast_gsw.SA = __SA
+    fast_gsw.CT = __CT
+    fast_gsw.pot_rho = __pot_rho
+    fast_gsw.rho = __rho
 
 CalibrationResult = namedtuple("CalibrationResult", "alpha beta tau number_of_profiles")
     
