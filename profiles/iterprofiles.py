@@ -6,85 +6,69 @@ Provides:
 
 lucas.merckelbach@hereon.de
 '''
-from collections import namedtuple
+#from collections import namedtuple, UserList
 
 import numpy as np
 from scipy.interpolate import interp1d
 
-
-class Profile(object):
-    def __init__(self,data,i_down,i_up,
-                 T_str='time',P_str='pressure'):
-        self.data=data
-        self.i_down=i_down
-        self.i_up=i_up
-        self.i_cast=np.hstack((i_down,i_up))
-        self.T_str=T_str
-        self.P_str=P_str
-        t=self.data[T_str]
-        self.t_down=t[self.i_down].mean()
-        self.t_up=t[self.i_up].mean()
-        self.t_cast=0.5*(self.t_down+self.t_up)
-
-    def __get_cast_data(self,i,parameter,co_parameter,despike=False):
-        if co_parameter==None:
-            x=self.data[self.T_str][i]
-            if parameter in self.data.keys():
-                y=self.data[parameter][i]
-            elif parameter=="surface":
-                y=x*0
-            elif parameter=="bed":
-                y=x*0+1e9
-            else:
-              raise ValueError("Unknown parameter!")
+    
+class SingleProfile(object):
+    def __init__(self, data, s, despike=False):
+        self.is_despike_data = despike
+        self.data = data
+        self.s = s
+        
+    def __getattr__(self, parameter):
+        try:
+            d = self.data[parameter]
+        except KeyError:
+            raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, a))
+        if self.is_despike_data:
+            return SingleProfile.despike(d[self.s])
         else:
-            if parameter in self.data.keys():
-                x=self.data[parameter][i]
-            elif parameter=="surface":
-                x=(i*0).astype(float)
-            elif parameter=="bed":
-                x=(i*0).astype(float)+1e9
-            else:
-                raise ValueError("Unknown parameter!")  
-            if co_parameter in self.data.keys():
-                y=self.data[co_parameter][i]
-            elif co_parameter=="surface":
-                y=x*0
-            elif co_parameter=="bed":
-                y=x*0+1e9
-            else:
-                raise ValueError("Unknown co_parameter!")
-        if despike:
-            if co_parameter:
-                x=self.despike(x)
-            y=self.despike(y)
-        if co_parameter is None:
-            s = ['t', parameter]
-        else:
-            s = [parameter, co_parameter]
-        ProfileData = namedtuple("ProfileData", s)
-        return ProfileData(x,y)
-            
-    def get_cast(self,parameter,co_parameter=None,despike=False):
-        return self.__get_cast_data(self.i_cast,parameter,co_parameter,despike)
+            return d[self.s]
 
-    def get_upcast(self,parameter,co_parameter=None,despike=False):
-        return self.__get_cast_data(self.i_up,parameter,co_parameter,despike)
-
-    def get_downcast(self,parameter,co_parameter=None,despike=False):
-        return self.__get_cast_data(self.i_down,parameter,co_parameter,despike)
-
-
-    def despike(self,x):
+    @classmethod
+    def despike(cls, x):
         xp = x.copy() # to return, keeps same size.
         y=np.vstack([x[:-2],x[1:-1],x[2:]])
         xp[1:-1] = np.median(y, axis=0)
         return xp
     
+class ProfileList(object):
 
+    def __init__(self, data, despike=False):
+        self.data = data
+        self.is_despike_data = despike
+        self.slices = []
+        self.parameters = tuple(self.data.keys())
 
+    def __iter__(self):
+        self.__profile_counter = 0
+        return self
+
+    def __next__(self):
+        if self.__profile_counter < len(self.slices):
+            r = SingleProfile(self.data, self.slices[self.__profile_counter], despike=self.is_despike_data)
+            self.__profile_counter += 1
+            return r
+        else:
+            raise StopIteration
+            
+    def append(self, s):
+        self.slices.append(s)
+
+    def __getattr__(self, parameter):
+        try:
+            d = self.data[parameter]
+        except KeyError:
+            raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, parameter))
+        if self.is_despike_data:
+            d = SingleProfile.despike(d)
+        return tuple([d[s] for s in self.slices])
+        
     
-class ProfileSplitter(list):
+class ProfileSplitter(object):
     ''' A class to split glider data into profiles
 
     Typical use:
@@ -128,7 +112,6 @@ class ProfileSplitter(list):
         remove_incomplete_tuples: if true only when down AND up cast are available,
                                   the profile is retained.
         '''
-        list.__init__(self)
         self.set_window_size(window_size)
         self.set_threshold(threshold_bar_per_second)
         self.min_length=50 # at least 50 samples to be in a profile.
@@ -136,14 +119,8 @@ class ProfileSplitter(list):
         self.required_depth_range=15.
         self.data=data
         self.remove_incomplete_tuples=remove_incomplete_tuples
-        self.levels=[]
         self.summary={}
-
-    def __getattr__(self, a):
-        try:
-            return self.data[a]
-        except KeyError:
-            raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, a))
+        self.indices = []
 
     def set_window_size(self,window_size):
         ''' sets window size used in the moving averaged smoother of the pressure rate
@@ -214,11 +191,13 @@ class ProfileSplitter(list):
             else:
                 s_down = self._slice_fun(_i_down)
                 s_up = self._slice_fun(_i_up)
-            self.append(Profile(self.data,
-                                np.arange(s_down.start, s_down.stop), # convert slices to index numbers
-                                np.arange(s_up.start, s_up.stop),     # other methods rely on this.
-                                self.T_str,self.P_str))
+            self.indices.append((s_down, s_up))
 
+    @property
+    def nop(self):
+        ''' Number of profiles'''
+        return len(self.indices)
+    
     def remove_prematurely_ended_dives(self,threshold=3):
         ''' Remove up/down yo pairs for
             which have a depth that is more than <threshold> m shallower than
@@ -230,24 +209,44 @@ class ProfileSplitter(list):
             If profile is <threshold> m shallower than the previous and next profile, it is considered permaturely ended.
 
         '''
-        removables=[]
-        for p,c,n in zip(self[:-2],self[1:-1],self[2:]):
-            max_depth=(p.get_cast("pressure")[1].max() + \
-                       n.get_cast("pressure")[1].max())*0.5
-            if c.get_cast("pressure")[1].max()<max_depth-threshold/10:
-                removables.append(c)
-        for r in removables:
-            self.remove(r)
+        disqualified = []
+        slices = [slice(s_down.start, s_up.stop) for s_down, s_up in self.indices]
+        max_depths = [self.data[ProfileSplitter.P_str][s].max()*10 for s in slices]
+        for i, d in enumerate(max_depths):
+            if i==0:
+                continue
+            if d-max_depths[i-1] < -threshold:
+                disqualified.append(i)
+        self.summary['removed_prematurely_ended_dives'] = disqualified
+        if disqualified:
+            disqualified.reverse() # start removing from the end.
+            for dqfd in disqualified:
+                self.indices.pop(dqfd)
 
-    def get_upcasts(self,parameter, co_parameter=None, despike=False):
-        return tuple([p.get_upcast(parameter, co_parameter=None, despike=despike) for p in self])
 
-    def get_dowcasts(self,parameter,co_parameter=None,despike=False):
-        return tuple([p.get_downcast(parameter, co_parameter=None, despike=despike) for p in self])
+    def get_downcasts(self,despike=False):
+        return self._get_casts_worker(despike, 0b01)
 
-    def get_casts(self,parameter,co_parameter=None,despike=False):
-        return tuple([p.get_cast(parameter, co_parameter=co_parameter, despike=despike) for p in self])
+    def get_upcasts(self,despike=False):
+        return self._get_casts_worker(despike, 0b10)
     
+    def get_casts(self,despike=False):
+        return self._get_casts_worker(despike, 0b11)
+    
+    def _get_casts_worker(self, despike, direction):
+        pl = ProfileList(data=self.data, despike=despike)
+        for s_down, s_up in self.indices:
+            if direction & 0b01:
+                start = s_down.start
+            else:
+                start = s_up.start
+            if direction & 0b10:
+                stop = s_up.stop
+            else:
+                stop = s_down.stop
+            s = slice(start, stop)
+            pl.append(s)
+        return pl
             
     # Private methods
             
@@ -289,31 +288,61 @@ class ProfileSplitter(list):
 
     def _remove_incomplete_tuples(self,i_down,i_up):
         ''' remove incomplete up/down yo pairs '''
-        kd=0
-        ku=0
-        idx_up=[]
-        idx_down=[]
-        n_down=len(i_down)
-        n_up=len(i_up)
-        while 1:
-            if kd>=n_down or ku>=n_up:
+        if len(i_down)==0 or len(i_up)==0: 
+            print("Found either only downcasts or only upcasts or nothing at all. Continuing anyway.")
+            return i_down, i_up
+        # Normal behaviour:
+        # downcast i ends before upcast i starts, and upcast i ends before downcast i+1 starts, if present.
+        
+        i = 0
+        k = 0
+        error = 0
+        while True:
+            try:
+                d0 = i_down[i]
+            except IndexError:
+                error|=0b001
+            try:
+                u0 = i_up[i]
+            except IndexError:
+                error|=0b010
+            if error == 0: # both profiles exist:
+                condition0 = d0[-1] < u0[0] # downcast ends before upcast starts
+                try:
+                    d1 = i_down[i+1]
+                except IndexError:
+                    error|=0b100
+                if error == 0:
+                    condition1 = d1[0] > u0[-1]
+                else:
+                    condition1 = True
+                if condition0 and condition1:
+                    # all well
+                    if error&0b100:
+                        # found last pair.
+                        break
+                    else:
+                        i+=1
+                        continue
+                else:
+                    if condition1: # condition0 failed
+                        # remove upcast i
+                        i_up.pop(i)
+                        k+=1
+                    if condition0: # condition1 failed.
+                        i_down.pop(i)
+                        k+=1
+
+            elif error&0b011: # both profiles fail to exists. We're done.
                 break
-            c1=i_down[kd][0]<i_up[ku][0] # dive is before climb
-            if not c1: 
-                ku+=1
-                continue
-            if kd>=n_down-1:
-                break
-            c2=i_down[kd+1][0]>i_up[ku][0] # next dive is after climb
-            if not c2:
-                kd+=1
-                continue
-            # got a pair
-            idx_down.append(i_down[kd])
-            idx_up.append(i_up[ku])
-            kd+=1
-            ku+=1
-        return idx_down,idx_up
+            elif error == 0b010: # no upcast following down cast
+                i_down.pop(i)
+                k+=1 # counter for removed profiles.
+            elif error == 0b001: # no downcast for following upcast.
+                raise NotImplementedError("We have no downcast for next upcast. What should I do?")
+            error = 0
+        self.summary['Number of removed incomplete profiles'] = k
+        return i_down,i_up
 
 
     def _get_casts(self,dPdT_filtered,P,cast="up"):
@@ -343,14 +372,21 @@ class ProfileSplitter(list):
         return jdx
 
         
+if __name__ == "__main__":
 
-import dbdreader
+    import dbdreader
 
-dbd_path = "/home/lucas/gliderdata/nsb3_201907/hd/comet-2019-203-05-000.?bd"
-dbd = dbdreader.MultiDBD(dbd_path)
-tctd, C, T, D, flntu_turb = dbd.get_CTD_sync("sci_flntu_turb_units")
-data = dict(time=tctd, pressure=D, C=C*10, T=T, P=D*10, spm=flntu_turb)
+    dbd_path = "/home/lucas/gliderdata/nsb3_201907/hd/comet-2019-203-05-000.?bd"
+    #dbd_path = "/home/lucas/gliderdata/helgoland201407/hd/amadeus-2014-204-05-004.?bd"
+    dbd = dbdreader.MultiDBD(dbd_path)
+    tctd, C, T, D, flntu_turb = dbd.get_CTD_sync("sci_flntu_turb_units")
+    data = dict(time=tctd, pressure=D, C=C*10, T=T, P=D*10, spm=flntu_turb)
 
-ps = ProfileSplitter(data)
-ps.split_profiles()
+    ps = ProfileSplitter(data, remove_incomplete_tuples=True)
+    ps.split_profiles()
+    ps.remove_prematurely_ended_dives()
+    casts = ps.get_upcasts(despike=True)
+    spm = casts.spm[0]
 
+    for c in casts:
+        print(c.time.mean())

@@ -77,7 +77,16 @@ class ThermalLag(iterprofiles.ProfileSplitter):
         self.mask = None
         self.lat = lat
         self.lon = lon
-        
+
+    def interpolate_data(self, dt = 1.):
+        t = self.data['time']
+        ti = np.arange(t.min(), t.max(), dt)
+        keys = list(self.data.keys())
+        for k in keys:
+            if k!='time':
+                self.data[k] = np.interp(ti, t, self.data[k])
+        self.data['time'] = ti
+    
     def clear_mask(self):
         ''' Clears the mask and sets the size of the mask equal to the time vector.'''
         self.mask = np.zeros_like(self.data['time'], bool)
