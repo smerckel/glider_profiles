@@ -94,7 +94,7 @@ class ProfileSplitter(object):
 
     splitter=profiles.profiles.ProfileSplitter(data=data) # default values should be OK
     splitter.split_profiles()
-    temperature_casts=[splitter.get_cast(k,'T') for k in range(len(splitter))]
+
     '''
 
     T_str='time'
