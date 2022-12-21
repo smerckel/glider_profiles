@@ -353,8 +353,9 @@ class ProfileSplitter(object):
         k=np.hstack([[0],k,[len(idx)]])
         jdx=[]
         ignored_profiles=[]
-        ptps=[]
-        pmaxs=[]
+        ptps={}
+        pmaxs={}
+        profile_data={}
         for i in range(1,len(k)):
             if k[i]-k[i-1]>self.min_length:
                 j=idx[k[i-1]:k[i]]
@@ -364,11 +365,13 @@ class ProfileSplitter(object):
                     jdx.append(j)
                 else:
                     ignored_profiles.append(i-1)
-                    ptps.append(ptp)
-                    pmaxs.append(pmax)
+                    ptps[i-1]=ptp
+                    pmaxs[i-1]=pmax
+                    profile_data[i-1] = j
         self.summary['ignored_profiles']=ignored_profiles
-        self.summary['ptp']=ptps
-        self.summary['pmax']=pmaxs
+        self.summary['ptp'] = ptps
+        self.summary['pmax'] = pmaxs
+        self.summary['profile_data'] = profile_data
         return jdx
 
         
