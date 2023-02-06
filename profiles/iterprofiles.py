@@ -37,19 +37,20 @@ class SingleProfile(object):
     
 class ProfileList(object):
 
-    def __init__(self, data, despike=False):
+    def __init__(self, data, despike=False, profile_factory=None):
         self.data = data
         self.is_despike_data = despike
         self.slices = []
-        self.parameters = tuple(self.data.keys())
+        self.profile_factory = profile_factory or SingleProfile
 
     def __iter__(self):
         self.__profile_counter = 0
         return self
 
     def __next__(self):
+        pf = self.profile_factory
         if self.__profile_counter < len(self.slices):
-            r = SingleProfile(self.data, self.slices[self.__profile_counter], despike=self.is_despike_data)
+            r = pf(self.data, self.slices[self.__profile_counter], despike=self.is_despike_data)
             self.__profile_counter += 1
             return r
         else:
@@ -64,9 +65,13 @@ class ProfileList(object):
         except KeyError:
             raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, parameter))
         if self.is_despike_data:
-            d = SingleProfile.despike(d)
+            d = self.profile_factory.despike(d)
         return tuple([d[s] for s in self.slices])
-        
+
+    @property
+    def parameters(self):
+        return tuple(self.data.keys())
+    
     
 class ProfileSplitter(object):
     ''' A class to split glider data into profiles
@@ -101,7 +106,7 @@ class ProfileSplitter(object):
     P_str='pressure'
 
     def __init__(self,data={},window_size=9,threshold_bar_per_second=1e-3,
-                 remove_incomplete_tuples=True):
+                 remove_incomplete_tuples=True, profile_factory=None):
         '''
         data: dictionary of data to be split in profiles
               should contain T_str (default "time")
@@ -121,6 +126,7 @@ class ProfileSplitter(object):
         self.remove_incomplete_tuples=remove_incomplete_tuples
         self.summary={}
         self.indices = []
+        self.profile_factory = profile_factory
 
     def set_window_size(self,window_size):
         ''' sets window size used in the moving averaged smoother of the pressure rate
@@ -232,9 +238,13 @@ class ProfileSplitter(object):
     
     def get_casts(self,despike=False):
         return self._get_casts_worker(despike, 0b11)
+
+
+    # Private methods
+            
     
     def _get_casts_worker(self, despike, direction):
-        pl = ProfileList(data=self.data, despike=despike)
+        pl = ProfileList(data=self.data, despike=despike, profile_factory=self.profile_factory)
         for s_down, s_up in self.indices:
             if direction & 0b01:
                 start = s_down.start
@@ -247,8 +257,6 @@ class ProfileSplitter(object):
             s = slice(start, stop)
             pl.append(s)
         return pl
-            
-    # Private methods
             
     def _slice_fun(self, idx):
         ''' Returns index list as a slice
@@ -375,21 +383,3 @@ class ProfileSplitter(object):
         return jdx
 
         
-if __name__ == "__main__":
-
-    import dbdreader
-
-    dbd_path = "/home/lucas/gliderdata/nsb3_201907/hd/comet-2019-203-05-000.?bd"
-    #dbd_path = "/home/lucas/gliderdata/helgoland201407/hd/amadeus-2014-204-05-004.?bd"
-    dbd = dbdreader.MultiDBD(dbd_path)
-    tctd, C, T, D, flntu_turb = dbd.get_CTD_sync("sci_flntu_turb_units")
-    data = dict(time=tctd, pressure=D, C=C*10, T=T, P=D*10, spm=flntu_turb)
-
-    ps = ProfileSplitter(data, remove_incomplete_tuples=True)
-    ps.split_profiles()
-    ps.remove_prematurely_ended_dives()
-    casts = ps.get_upcasts(despike=True)
-    spm = casts.spm[0]
-
-    for c in casts:
-        print(c.time.mean())
