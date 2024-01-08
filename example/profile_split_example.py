@@ -12,16 +12,9 @@
    * now you can get profiles of time or pressure per variable.
 
 '''
-from __future__ import print_function
-from __future__ import unicode_literals
-from __future__ import division
-from __future__ import absolute_import
-from builtins import dict
-from future import standard_library
-standard_library.install_aliases()
 import dbdreader
-import profiles.profiles
-import pylab as pl
+import profiles.iterprofiles as profiles
+import matplotlib.pyplot as plt
 
 # lets read a dbd file (can also be multiple).
 
@@ -63,60 +56,48 @@ data=dict(time=tctd,
 # removed from the data pool if this parameter is set to True
 
 
-ps=profiles.profiles.ProfileSplitter(data=data) # default values should be OK
+ps=profiles.ProfileSplitter(data=data) # default values should be OK
 
-ps.split_profiles()
 
-print("We have %d profiles"%(len(ps)))
+# Tell how many profiles we have found.
+print("We have %d profiles"%(ps.nop))
 
-# get time series of 3rd profile of temperature
-
-ts=ps.get_cast(2,'T') # 'T' is the name of the key in data
-# or as up cast only
-
-ts_up=ps.get_upcast(2,'T') # 'T' is the name of the key in data
-ts_dw=ps.get_downcast(2,'T') # 'T' is the name of the key in data
-
-pl.figure(1)
-pl.plot(ts[0],ts[1],label='up and down cast')
-pl.plot(ts_up[0],ts_up[1],'^',label='up cast only')
-pl.plot(ts_dw[0],ts_dw[1],'v',label='down cast only')
-pl.legend()
-
-prs=ps.get_cast(2,'P') # 'P' is the name of the key in data
-prs_up=ps.get_upcast(2,'P') 
-prs_dw=ps.get_downcast(2,'P') 
-
-pl.figure(2)
-pl.plot(prs[0],prs[1],label='up and down cast')
-pl.plot(prs_dw[0],prs_dw[1],'v',label='down cast only')
-pl.plot(prs_up[0],prs_up[1],'^',label='up cast only')
+# Now let's get some data. We can choose from
 #
-prs=ps.get_cast(3,'P') # 'P' is the name of the key in data
-prs_dw=ps.get_downcast(3,'P') 
-pl.plot(prs[0],prs[1],label='up and down cast')
-pl.plot(prs_dw[0],prs_dw[1],'v',label='down cast only')
-pl.legend()
+# casts()    : returns up AND down casts
+# upcasts()  : returns the up casts only
+# downcast() : returns the down casts only.
+
+casts = ps.get_casts() # up and down casts
 
 
+# casts is of the type ProfileList. We can ask what parameters are available:
 
-# if you want a profile agains pressure:
-# either
+print("Parameters in casts: ")
+print(casts.parameters)
 
-ts=ps.get_cast(2,'T') # 'T' is the name of the key in data
-prs=ps.get_cast(2,'P') # 'P' is the name of the key in data
-# or 'pressure' in stead of 'P'
-pl.figure(3)
-pl.plot(ts[1],prs[1],label='method one')
+# And each of these are accessible as attributes:
 
-#or
+print("Mean temperature of cast #2:", casts.T[2].mean())
 
-tp=ps.get_cast(2,'T','P')
+# Now plot some data.
 
-pl.plot(tp[0],-tp[1],label='method two')
-pl.legend()
+f, (ax, bx) = plt.subplots(2,1)
 
-pl.show()
+scale = 5
+for i, (_T, _z) in enumerate(zip(casts.T, casts.P)):
+    ax.plot(_T+i*scale, _z)
 
 
+for i, (_t, _z) in enumerate(zip(casts.time, casts.P)):
+    bx.plot(_t, _z)
 
+bx.plot(tctd, P*10, '--')    
+
+for _ax in (ax, bx):
+    _ax.yaxis.set_inverted(True)
+    _ax.set_ylabel('Depth (m)')
+ax.set_xlabel('Temperature, offset by profile (scale 5 ℃/profile) (℃)')
+bx.set_xlabel('Time since Epoch (s)')
+
+plt.show()
