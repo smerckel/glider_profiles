@@ -9,6 +9,7 @@ lucas.merckelbach@hereon.de
 from collections import namedtuple
 
 import numpy as np
+#from scipy.signal.spectral import _fft_helper
 from scipy.interpolate import interp1d
 
 
