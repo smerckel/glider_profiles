@@ -11,42 +11,145 @@ Provides:
 
 lucas.merckelbach@hereon.de
 '''
-#from collections import namedtuple, UserList
 
 import numpy as np
 from scipy.interpolate import interp1d
+from scipy.signal import medfilt
+import logging
 
+logger = logging.getLogger(__name__)
     
-class SingleProfile(object):
-    def __init__(self, data, s, despike=False):
-        self.is_despike_data = despike
+class SimpleProfile(object):
+    '''A data class holding a single profile
+
+    Parameters
+    ----------
+    
+    data : dict
+        dictionary with data
+    s : slice
+        slice object to select a specific subset of the data
+
+
+    The data members can be accessed using a key in the data
+    dictionary attribute. Althernatively, data can be accessed as an
+    attribute of this clase.
+
+    Example
+    -------
+   
+    >>> p = SimpleProfile(data, s)
+    >>> p.data["temperature"]
+    >>> p.temperature
+
+    '''
+    def __init__(self, data, s):
         self.data = data
         self.s = s
+        self.cache = {}
         
     def __getattr__(self, parameter):
         try:
-            d = self.data[parameter]
+            data  = self.cache[parameter]
         except KeyError:
-            raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, a))
-        if self.is_despike_data:
-            return SingleProfile.despike(d[self.s])
+            try:
+                d = self.data[parameter]
+            except KeyError:
+                raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, parameter))
+            else:
+                data = d[self.s]
+                self.cache[parameter] = data
+                return data
         else:
-            return d[self.s]
+            return data
 
-    @classmethod
-    def despike(cls, x):
-        xp = x.copy() # to return, keeps same size.
-        y=np.vstack([x[:-2],x[1:-1],x[2:]])
-        xp[1:-1] = np.median(y, axis=0)
-        return xp
+    def keys(self):
+        '''Returns the available parameter names
+
+        Returns
+        -------
+        dict_keys
+            list of available parameter names
+        '''
+        return self.data.keys()
+
+
+class AdvancedProfile(SimpleProfile):
+    '''Advanced Profile based on SimpleProfile, implementing a despike algorithm.
     
-class ProfileList(object):
+    Parameters
+    ----------
+    
+    data : dict
+        dictionary with data
+    s : slice
+        slice object to select a specific subset of the data
 
-    def __init__(self, data, despike=False, profile_factory=None):
+
+    The data members can be accessed using a key in the data
+    dictionary attribute. Althernatively, data can be accessed as an
+    attribute of this clase.
+
+    Example
+    -------
+   
+    >>> p = SimpleProfile(data, s)
+    >>> p.data["temperature"]
+    >>> p.temperature
+    '''
+    
+    def __init__(self, data, s):
+        super().__init__(data, s)
+
+    def despike(self, parameter, window_size=3):
+        ''' Returns a despiked data array
+
+        Parameters
+        ----------
+        parameter : string
+            name of parameter to return
+
+        window_size : int
+            window size over which the median filter should be applied
+
+        Returns
+        -------
+        numpy.array
+            despiked data array for parameter "parameter"
+        
+        '''
+        data = self.__getattr__(parameter)
+        return medfilt(data, kernel_size=window_size)
+
+class ProfileList(object):
+    '''Container class hold a list of data profiles
+
+    This class contains the raw data and information on how these data
+    arrays are to be sliced in single profiles. The slicing happens on
+    demand, and returns a SimpleProfile object or any of its
+    subclassed objects. The type of Profile object can be selected by setting a profile_factory.
+    
+    Parameters
+    ----------
+    data : dict
+        dictionary with time series
+
+    profile_factory : string or None {None}
+        profile_factory
+
+    The default profile_factory is SimpleProfile.
+
+    Note
+    ----
+    
+    The class ProfileList is not intended to be called directly, but
+    set by ProfileSplitter.
+    '''
+    
+    def __init__(self, data, profile_factory=None):
         self.data = data
-        self.is_despike_data = despike
         self.slices = []
-        self.profile_factory = profile_factory or SingleProfile
+        self.profile_factory = profile_factory or SimpleProfile
 
     def __iter__(self):
         self.__profile_counter = 0
@@ -55,23 +158,34 @@ class ProfileList(object):
     def __next__(self):
         pf = self.profile_factory
         if self.__profile_counter < len(self.slices):
-            r = pf(self.data, self.slices[self.__profile_counter], despike=self.is_despike_data)
+            r = pf(self.data, self.slices[self.__profile_counter])
             self.__profile_counter += 1
             return r
         else:
             raise StopIteration
+
+    def __len__(self):
+        return len(self.slices)
+    
+    def __getitem__(self, index):
+        if 0 <= index < len(self.slices):
+            r = self.profile_factory(self.data, self.slices[index])
+            return r
+        else:
+            raise IndexError(f"Index {index} is out of range for Data")
+
             
     def append(self, s):
         self.slices.append(s)
 
     def __getattr__(self, parameter):
+        logger.debug("in __getattr__")
         try:
             d = self.data[parameter]
         except KeyError:
             raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, parameter))
-        if self.is_despike_data:
-            d = self.profile_factory.despike(d)
         return tuple([d[s] for s in self.slices])
+        
 
     @property
     def parameters(self):
@@ -79,32 +193,49 @@ class ProfileList(object):
     
     
 class ProfileSplitter(object):
+
     ''' A class to split glider data into profiles
 
-    Typical use:
+    Main class that accepts glider data in time series, and splits the data in up and down casts.
 
-    import dbdreader
-    import profiles.profiles
+    Parameters:
+    -----------
     
+    data: dictionary
+        data to be split in profiles. The dictionary is expected to contain key/value pairs for
+        T_str (default "time") and P_str (default "pressure"), as well other data time series.
+    
+    window_size: int
+        size of window used in the running averaged algorithm to smooth the pressure signal
+    
+    threshold_bar_per_second: float
+        discriminant for detecting profile changes
+    
+    remove_incomplete_tuples: bool
+        if true, a profile is retained only if the  down AND up cast are available
 
-    dbd=dbdreader.MultiDBD(pattern='path/to/some/gliderbinary/files.[ed]bd')
-    tmp=dbd.get_sync("sci_ctd41cp_timestamp",["sci_water_temp",
-                                          "sci_water_cond",
-                                          "sci_water_pressure"])
-
-    t_dummy,tctd,T,C,P=tmp
-
-    data=dict(time=tctd,
-               pressure=P,
-               # and now the variables. You will reference them by the key
-               # name you give them in this dictionary.
-               T=T,
-               C=C*10, # mS/cm
-               P=P*10) # bar
-
-    splitter=profiles.profiles.ProfileSplitter(data=data) # default values should be OK
-    splitter.split_profiles()
-
+    profile_factory : object or None
+        a class definition to create single profiles. If None, SimpleProfile is used.
+        
+    Example:
+        >>> import dbdreader
+        >>> import profiles.profiles
+    
+        >>> dbd=dbdreader.MultiDBD(pattern='path/to/some/gliderbinary/files.[ed]bd')
+        >>> tmp=dbd.get_sync("sci_ctd41cp_timestamp",["sci_water_temp", 
+        ...                                           "sci_water_cond", 
+        ...                                           "sci_water_pressure"])
+        >>> t_dummy,tctd,T,C,P=tmp
+    
+        >>> data=dict(time=tctd,
+        ...           pressure=P,
+        ...           # and now the variables. You will reference them by the key
+        ...           # name you give them in this dictionary.
+        ...           T=T,
+        ...           C=C*10, # mS/cm
+        ...           P=P*10) # bar
+    
+        >>> splitter=profiles.profiles.ProfileSplitter(data=data) # default values should be OK
     '''
 
     T_str='time'
@@ -112,16 +243,6 @@ class ProfileSplitter(object):
 
     def __init__(self,data={},window_size=9,threshold_bar_per_second=1e-3,
                  remove_incomplete_tuples=True, profile_factory=None):
-        '''
-        data: dictionary of data to be split in profiles
-              should contain T_str (default "time")
-                             P_str (default "pressure")
-                             and other data
-        window_size:
-        threshold_bar_per_second: discriminant for detecting profile changes
-        remove_incomplete_tuples: if true only when down AND up cast are available,
-                                  the profile is retained.
-        '''
         self.set_window_size(window_size)
         self.set_threshold(threshold_bar_per_second)
         self.min_length=50 # at least 50 samples to be in a profile.
@@ -134,32 +255,69 @@ class ProfileSplitter(object):
         self.profile_factory = profile_factory
         if data:
             self.split_profiles()
-
+        
     def set_window_size(self,window_size):
-        ''' sets window size used in the moving averaged smoother of the pressure rate
+        '''Sets window size used in the moving averaged smoother of the pressure rate
+
+        Parameters
+        ----------
+
+        window_size : int
+            window size for moving average algorithm
         '''
         self.window_size=window_size
         
     def get_window_size(self):
-        ''' gets window size used in the moving averaged smoother of the pressure rate
-        '''
+        '''Gets window size used in the moving averaged smoother of the pressure rate
 
+        Returns
+        -------
+        int
+            window size
+        '''
         return self.window_size
 
     def set_threshold(self,threshold):
-        ''' sets threshold for change in gradient marks end of profile '''
+        '''Sets threshold for change in gradient marks end of profile
+
+        Parameters
+        ----------
+        threshold : float
+            threshold value which the change in pressure gradient
+            should exceed to mark the transition from one profile to
+            the next.
+        '''
         self.threshold=threshold
         
     def get_threshold(self):
-        ''' gets threshold for change in gradient marks end of profile '''
+        '''Gets threshold for change in gradient marks end of profile
+
+        Returns
+        -------
+        float
+            threshold value
+        '''
         return self.threshold
 
     def set_required_depth(self,required_depth):
-        ''' Set depth level a profile minimally should have '''
+        '''Sets depth level a profile minimally should have.
+
+        Parameters
+        ----------
+        required_depth : float
+            depth limit
+        '''
         self.required_depth=required_depth
 
     def set_required_depth_range(self,required_depth_range):
-        ''' Set depth range a profile minimally should have '''
+        '''Set depth range a profile minimally should have
+
+        Parameters
+        ----------
+        required_depth_range : float
+            minimum depth range a profile should have
+
+        '''
         self.required_depth_range=required_depth_range
 
     def split_profiles(self,data=None, interpolate=False):
@@ -208,7 +366,7 @@ class ProfileSplitter(object):
 
     @property
     def nop(self):
-        ''' Number of profiles'''
+        '''Number of profiles'''
         return len(self.indices)
     
     def remove_prematurely_ended_dives(self,threshold=3):
@@ -237,21 +395,42 @@ class ProfileSplitter(object):
                 self.indices.pop(dqfd)
 
 
-    def get_downcasts(self,despike=False):
-        return self._get_casts_worker(despike, 0b01)
+    def get_downcasts(self):
+        '''Get down casts only
 
-    def get_upcasts(self,despike=False):
-        return self._get_casts_worker(despike, 0b10)
+        Returns
+        -------
+        :class:ProfileList
+            Iterable container structure holding all down casts
+        '''
+        return self._get_casts_worker(0b01)
+
+    def get_upcasts(self):
+        '''Get up casts only
+
+        Returns
+        -------
+        :class:ProfileList
+            Iterable container structure holding all up casts
+        '''
+        return self._get_casts_worker(0b10)
     
-    def get_casts(self,despike=False):
-        return self._get_casts_worker(despike, 0b11)
+    def get_casts(self):
+        '''Get down/up cast pairs
+
+        Returns
+        -------
+        :class:ProfileList
+            Iterable container structure holding all down/up casts
+        '''
+        return self._get_casts_worker(0b11)
 
 
     # Private methods
             
     
-    def _get_casts_worker(self, despike, direction):
-        pl = ProfileList(data=self.data, despike=despike, profile_factory=self.profile_factory)
+    def _get_casts_worker(self, direction):
+        pl = ProfileList(data=self.data, profile_factory=self.profile_factory)
         for s_down, s_up in self.indices:
             if direction & 0b01:
                 start = s_down.start
@@ -390,3 +569,4 @@ class ProfileSplitter(object):
         return jdx
 
         
+
