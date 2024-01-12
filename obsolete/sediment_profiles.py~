@@ -1,0 +1,269 @@
+from . import iterprofiles
+
+
+class SedimentProfileSplitter(iterprofiles.ProfileSplitter):
+    def __init__(self,data={},window_size=9,threshold_bar_per_second=1e-3,
+                 remove_incomplete_tuples=True):
+        '''
+        data: dictionary of data to be split in profiles
+              should contain T_str (default "time")
+                             P_str (default "pressure")
+                             and other data
+        window_size:
+        threshold_bar_per_second: discriminant for detecting profile changes
+        remove_incomplete_tuples: if true only when down AND up cast are available,
+                                  the profile is retained.
+        '''
+        super().__init__(data, window_size, thresholde_bar_per_second, remove_incomplte_tuples)
+
+
+        
+    def add_level_timeseries(self,t,z,level_name='pycnocline_depth'):
+        ''' Sets a time series of depth and a given name, for example pycnocline.
+            These depth levels can be used to limit the integration of profile
+            averaged values just to a given layer, such as top-pycnocline, or
+            2 m level - 10 m level etc.
+        '''
+        self.data[level_name]=np.interp(self.data[ProfileSplitter.T_str],t,z)
+        if level_name not in self.levels:
+            self.levels.append(level_name)
+
+    def get_downcast_integrated(self,parameter,levels=[],despike=False, avg_distance=1):
+        ''' get integrated upcast value for parameter at levels. The values at the levels are median values computed over within avg_distance m'''
+                
+        x=np.array([p.get_downcast_integrated(parameter,levels,despike, avg_distance=avg_distance)
+                    for p in self]).T
+        s={'t':x[0],
+           parameter:x[1],
+           'z1':x[4],
+           'z0':x[5],
+           "%s_z1"%(parameter):x[2],
+           "%s_z0"%(parameter):x[3],
+           "levels":levels}
+
+        profile_integrated = namedtuple("profile_integrated","t %s c0 c1 H0 H1 H"%(parameter))
+        s = profile_integrated(*x)
+        return s
+    
+    def get_upcast_integrated(self,parameter,levels=[],despike=False, avg_distance=1):
+        ''' get integrated upcast value for parameter at levels. The values at the levels are median values computed over within avg_distance m'''
+        
+        x=np.array([p.get_upcast_integrated(parameter,levels,despike, avg_distance=avg_distance)
+                    for p in self]).T
+        s={'t':x[0],
+           parameter:x[1],
+           'z1':x[4],
+           'z0':x[5],
+           "%s_z1"%(parameter):x[2],
+           "%s_z0"%(parameter):x[3],
+           "levels":levels}
+
+        profile_integrated = namedtuple("profile_integrated","t %s c0 c1 H0 H1 H"%(parameter))
+        s = profile_integrated(*x)
+        return s
+
+    # some interpolation functions:
+    def interpolate_data(self,dt = 1):
+        ''' using linear interpolation '''
+        tctd = self.data["time"]
+        ti = np.arange(tctd.min(), tctd.max()+dt, dt)
+        for k, v in self.data.items():
+            if k=="time":
+                continue
+            self.data[k] = np.interp(ti, tctd, v)
+        self.data["time"] = ti
+
+    def interpolate_data_shape_preserving(self,dt = 1):
+        ''' using cubic shape preserving interpolation '''
+        tctd = self.data["time"]
+        ti = np.arange(tctd.min(), tctd.max()+dt, dt)
+        for k, v in self.data.items():
+            if k=="time":
+                continue
+            f = pchip(tctd, v)
+            self.data[k] = f(ti)
+        self.data["time"] = ti
+        
+    def lag_filter_pressure_data(self, delay, other_pressure_parameters = []):
+        ti = self.data["time"]
+        p = ["pressure"] + other_pressure_parameters
+        LF = filters.LagFilter(1,delay)
+        for k in p:
+            self.data[k] = LF.filter(ti, self.data[k])
+
+    def get_profile(self, t):
+        ''' Get nearest profile.
+
+        For given time t, the method returns the profile that is closest in time.
+
+        Parameters:
+        -----------
+        
+        t: scalar | time in s
+
+        Returns:
+        --------
+        
+        profile that is closest in time.
+        '''
+        return self[self.get_profile_index(t)]
+    
+    def get_profile_index(self, t):
+        ''' Get nearest profile index.
+
+        For given time t, the method returns the profile index that is closest in time.
+
+        Parameters:
+        -----------
+        
+        t: scalar | time in s
+
+        Returns:
+        --------
+        
+        index of profile that is closest in time.
+        '''
+        cast_times = np.array([_p.t_cast for _p in self])
+        idx = np.argmin(np.abs(cast_times-t))
+        return idx
+
+
+class Thermocline(ProfileSplitter):
+    def __init__(self,data={},window_size=9,threshold_bar_per_second=1e-3,
+                 remove_incomplete_tuples=True):
+        ProfileSplitter.__init__(self,data,window_size,threshold_bar_per_second,
+                                 remove_incomplete_tuples)
+
+    def add_buoyancy_frequency(self,rho0=1027.,window=15):
+        ''' Adds the buoyancy frequency to the self.data dictionary '''
+        W=window
+        rho=self.data['rho']
+        z=self.data[self.P_str]*10
+        dz = np.gradient(z)
+        drho = np.gradient(rho)
+        condition = np.abs(dz)>0.02 # if dz >? 2 cm compute N2, otherwise leave it nan
+        i = np.where(condition) 
+        _N2=9.81/rho0*drho[i]/dz[i]
+        _N2=np.convolve(_N2,np.ones(W)/W,'same')
+        N2 = np.zeros_like(z)*np.nan
+        N2[i] = _N2
+        self.data['N2']=N2
+
+    def thermocline_depth_maxN2(self,
+                                direction="down",
+                                N2_crit=1e-3,
+                                min_depth=5,
+                                max_depth=35,
+                                max_depth_pct=80):
+        ttcl=np.zeros(len(self),float)
+        ztcl=np.zeros(len(self),float)
+
+        for j,p in enumerate(self):
+            if direction == "down":
+                f = p.get_downcast
+            elif direction == "up":
+                f = p.get_upcast
+            else:
+                raise ValueError("direction should be up or down.")
+            t,P=f(self.P_str)
+            _, N2=f("N2")
+            condition=np.logical_and(P*10>min_depth,
+                                     np.logical_or(P*10<max_depth,P<max_depth_pct/10*P.max()))
+            condition=np.logical_and(np.isfinite(N2), condition)
+            N2_section,P_section,t_section=np.compress(condition,[N2,P,t],axis=1)
+            i=np.argmax(N2_section)
+            if N2_section[i]>N2_crit:
+                ttcl[j]=t_section[i]
+                ztcl[j]=P_section[i]*10
+            else:
+                ttcl[j]=t_section[0]
+                ztcl[j]=np.nan
+        return ttcl, ztcl
+    
+    def thermocline_depth_max_temp_gradient(self,
+                                direction="down",
+                                Tgrad_crit=0.5, # 0.5 deg/m or more
+                                min_depth=5,
+                                max_depth=35,
+                                max_depth_pct=80):
+        ttcl=np.zeros(len(self),float)
+        ztcl=np.zeros(len(self),float)
+
+        for j,p in enumerate(self):
+            if direction == "down":
+                f = p.get_downcast
+            elif direction == "up":
+                f = p.get_upcast
+            else:
+                raise ValueError("direction should be up or down.")
+            t,P=f(self.P_str)
+            _, T=f("T")
+            dTdz = np.gradient(T)/np.gradient(P)/10.
+            condition=np.logical_and(P*10>min_depth,
+                                     np.logical_or(P*10<max_depth,P<max_depth_pct/10*P.max()))
+            condition=np.logical_and(np.isfinite(dTdz), condition)
+            dTdz_section,P_section,t_section=np.compress(condition,[dTdz,P,t],axis=1)
+            i=np.argmax(dTdz_section)
+            if dTdz_section[i]>Tgrad_crit:
+                ttcl[j]=t_section[i]
+                ztcl[j]=P_section[i]*10
+            else:
+                ttcl[j]=t_section[0]
+                ztcl[j]=np.nan
+        return ttcl, ztcl
+
+    def calc_thermocline_maxN2(self,N2_crit=1e-3,
+                               min_depth=5,
+                               max_depth=35,
+                               max_depth_pct=80):
+        ttcl=np.zeros((2,len(self)),float)
+        ztcl=np.zeros((2,len(self)),float)
+
+        for j,p in enumerate(self):
+            for k in range(2):
+                f=[p.get_downcast,p.get_upcast]
+                t,P=f[k](self.P_str)
+                N2=f[k]("N2")[1]
+                condition=np.logical_and(P*10>min_depth,
+                                         np.logical_or(P*10<max_depth,P<max_depth_pct/10*P.max()))
+                N2_section,P_section,t_section=np.compress(condition,[N2,P,t],axis=1)
+                i=np.argmax(N2_section)
+                if N2_section[i]>N2_crit:
+                    ttcl[k,j]=t_section[i]
+                    ztcl[k,j]=P_section[i]
+                else:
+                    ttcl[k,j]=t_section[0]
+                    ztcl[k,j]=0
+        self.add_level_timeseries(ttcl[0],ztcl[0],level_name='pycnocline_depth_downcast')
+        self.add_level_timeseries(ttcl[1],ztcl[1],level_name='pycnocline_depth_upcast')
+        self.add_level_timeseries(ttcl.mean(axis=0),ztcl.mean(axis=0),level_name='pycnocline_depth')
+
+    def calc_thermocline_temperature(self,dT=0.1):
+        ttcl=np.zeros((2,len(self)),float)
+        ztcl=np.zeros((2,len(self)),float)
+
+        for j,p in enumerate(self):
+            f=[p.get_downcast,p.get_upcast]
+            for k in range(2):
+                t,P=f[k](self.P_str)
+                T=f[k]("T")[1]
+                counts,bins=np.histogram(T,10)
+                Tc=(bins[1:]+bins[:-1])*0.5
+                ttcl[k,j]=t.mean()
+                if Tc.ptp()<dT:
+                    ztcl[k,j]=np.nan
+                else:
+                    Tmean=Tc.mean()
+                    counts_warm=counts.compress(Tc>Tmean)
+                    Tc_warm=Tc.compress(Tc>Tmean)
+                    T_warm=Tc_warm[np.argmax(counts_warm)]
+                    counts_cold=counts.compress(Tc<Tmean)
+                    Tc_cold=Tc.compress(Tc<Tmean)
+                    T_cold=Tc_cold[np.argmax(counts_cold)]
+                    Tmean=(T_warm+T_cold)/2.
+                    i=np.argmin(np.abs(T-Tmean))
+                    ztcl[k,j]=P[i]*10
+        
+        self.add_level_timeseries(ttcl.T.ravel(),ztcl.T.ravel(),level_name='pycnocline_depth')
+        return ttcl,ztcl
+        

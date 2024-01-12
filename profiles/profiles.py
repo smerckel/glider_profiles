@@ -1,333 +1,545 @@
 '''
-A module for splitting glider data into profiles
+Splits glider data time series into profiles.
+
+Glider data time series can be split in profiles:
+1) per down/up cast pair
+2) down casts only
+3) up casts only
 
 Provides:
       ProfileSplitter()
-      CrossSpectral()
 
-8 October 2013
-
-lucas.merckelbach@hzg.de
-
+lucas.merckelbach@hereon.de
 '''
-import numpy as np
-from functools import reduce
 
+import numpy as np
+from scipy.interpolate import interp1d
+from scipy.signal import medfilt
+import logging
+
+logger = logging.getLogger(__name__)
+    
+class SimpleProfile(object):
+    '''A data class holding a single profile
+
+    Parameters
+    ----------
+    
+    data : dict
+        dictionary with data
+    s : slice
+        slice object to select a specific subset of the data
+
+
+    The data members can be accessed using a key in the data
+    dictionary attribute. Althernatively, data can be accessed as an
+    attribute of this clase.
+
+    Example
+    -------
+   
+    >>> p = SimpleProfile(data, s)
+    >>> p.data["temperature"]
+    >>> p.temperature
+
+    '''
+    def __init__(self, data, s):
+        self.data = data
+        self.s = s
+        self.cache = {}
+        
+    def __getattr__(self, parameter):
+        try:
+            data  = self.cache[parameter]
+        except KeyError:
+            try:
+                d = self.data[parameter]
+            except KeyError:
+                raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, parameter))
+            else:
+                data = d[self.s]
+                self.cache[parameter] = data
+                return data
+        else:
+            return data
+
+    def keys(self):
+        '''Returns the available parameter names
+
+        Returns
+        -------
+        dict_keys
+            list of available parameter names
+        '''
+        return self.data.keys()
+
+
+class AdvancedProfile(SimpleProfile):
+    '''Advanced Profile based on SimpleProfile, implementing a despike algorithm.
+    
+    Parameters
+    ----------
+    
+    data : dict
+        dictionary with data
+    s : slice
+        slice object to select a specific subset of the data
+
+
+    The data members can be accessed using a key in the data
+    dictionary attribute. Althernatively, data can be accessed as an
+    attribute of this clase.
+
+    Example
+    -------
+   
+    >>> p = SimpleProfile(data, s)
+    >>> p.data["temperature"]
+    >>> p.temperature
+    '''
+    
+    def __init__(self, data, s):
+        super().__init__(data, s)
+
+    def despike(self, parameter, window_size=3):
+        ''' Returns a despiked data array
+
+        Parameters
+        ----------
+        parameter : string
+            name of parameter to return
+
+        window_size : int
+            window size over which the median filter should be applied
+
+        Returns
+        -------
+        numpy.array
+            despiked data array for parameter "parameter"
+        
+        '''
+        data = self.__getattr__(parameter)
+        return medfilt(data, kernel_size=window_size)
+
+class ProfileList(object):
+    '''Container class hold a list of data profiles
+
+    This class contains the raw data and information on how these data
+    arrays are to be sliced in single profiles. The slicing happens on
+    demand, and returns a SimpleProfile object or any of its
+    subclassed objects. The type of Profile object can be selected by setting a profile_factory.
+    
+    Parameters
+    ----------
+    data : dict
+        dictionary with time series
+
+    profile_factory : string or None {None}
+        profile_factory
+
+    The default profile_factory is SimpleProfile.
+
+    Note
+    ----
+    
+    The class ProfileList is not intended to be called directly, but
+    set by ProfileSplitter.
+    '''
+    
+    def __init__(self, data, profile_factory=None):
+        self.data = data
+        self.slices = []
+        self.profile_factory = profile_factory or SimpleProfile
+
+    def __iter__(self):
+        self.__profile_counter = 0
+        return self
+
+    def __next__(self):
+        pf = self.profile_factory
+        if self.__profile_counter < len(self.slices):
+            r = pf(self.data, self.slices[self.__profile_counter])
+            self.__profile_counter += 1
+            return r
+        else:
+            raise StopIteration
+
+    def __len__(self):
+        return len(self.slices)
+    
+    def __getitem__(self, index):
+        if 0 <= index < len(self.slices):
+            r = self.profile_factory(self.data, self.slices[index])
+            return r
+        else:
+            raise IndexError(f"Index {index} is out of range for Data")
+
+            
+    def append(self, s):
+        self.slices.append(s)
+
+    def __getattr__(self, parameter):
+        logger.debug("in __getattr__")
+        try:
+            d = self.data[parameter]
+        except KeyError:
+            raise AttributeError("'{}' object has no attribute '{}'.".format(self.__class__.__name__, parameter))
+        return tuple([d[s] for s in self.slices])
+        
+
+    @property
+    def parameters(self):
+        return tuple(self.data.keys())
+    
+    
 class ProfileSplitter(object):
+
     ''' A class to split glider data into profiles
 
-    Typical use:
+    Main class that accepts glider data in time series, and splits the data in up and down casts.
 
-    import dbdreader
-    import profiles.profiles
+    Parameters:
+    -----------
     
+    data: dictionary
+        data to be split in profiles. The dictionary is expected to contain key/value pairs for
+        T_str (default "time") and P_str (default "pressure"), as well other data time series.
+    
+    window_size: int
+        size of window used in the running averaged algorithm to smooth the pressure signal
+    
+    threshold_bar_per_second: float
+        discriminant for detecting profile changes
+    
+    remove_incomplete_tuples: bool
+        if true, a profile is retained only if the  down AND up cast are available
 
-    dbd=dbdreader.MultiDBD(pattern='path/to/some/gliderbinary/files.[ed]bd')
-    tmp=dbd.get_sync("sci_ctd41cp_timestamp",["sci_water_temp",
-                                          "sci_water_cond",
-                                          "sci_water_pressure"])
-
-    t_dummy,tctd,T,C,P=tmp
-
-    data=dict(time=tctd,
-               pressure=P,
-               # and now the variables. You will reference them by the key
-               # name you give them in this dictionary.
-               T=T,
-               C=C*10, # mS/cm
-               P=P*10) # bar
-
-    splitter=profiles.profiles.ProfileSplitter(data=data) # default values should be OK
-    splitter.split_profiles()
-    temperature_casts=[splitter.get_cast(k,'T') for k in range(len(splitter))]
+    profile_factory : object or None
+        a class definition to create single profiles. If None, SimpleProfile is used.
+        
+    Example:
+        >>> import dbdreader
+        >>> import profiles.profiles
+    
+        >>> dbd=dbdreader.MultiDBD(pattern='path/to/some/gliderbinary/files.[ed]bd')
+        >>> tmp=dbd.get_sync("sci_ctd41cp_timestamp",["sci_water_temp", 
+        ...                                           "sci_water_cond", 
+        ...                                           "sci_water_pressure"])
+        >>> t_dummy,tctd,T,C,P=tmp
+    
+        >>> data=dict(time=tctd,
+        ...           pressure=P,
+        ...           # and now the variables. You will reference them by the key
+        ...           # name you give them in this dictionary.
+        ...           T=T,
+        ...           C=C*10, # mS/cm
+        ...           P=P*10) # bar
+    
+        >>> splitter=profiles.profiles.ProfileSplitter(data=data) # default values should be OK
     '''
 
     T_str='time'
     P_str='pressure'
 
     def __init__(self,data={},window_size=9,threshold_bar_per_second=1e-3,
-                 remove_incomplete_tuples=True):
-        '''
-        data: dictionary of data to be split in profiles
-              should contain T_str (default "time")
-                             P_str (default "pressure")
-                             and other data
-        window_size:
-        threshold_bar_per_second: discriminant for detecting profile changes
-        remove_incomplete_tuples: if true only when down AND up cast are available,
-                                  the profile is retained.
-        '''
+                 remove_incomplete_tuples=True, profile_factory=None):
         self.set_window_size(window_size)
         self.set_threshold(threshold_bar_per_second)
         self.min_length=50 # at least 50 samples to be in a profile.
         self.required_depth=5.
         self.required_depth_range=15.
         self.data=data
-        self.__remove_incomplete_tuples=remove_incomplete_tuples
-        self.levels=[]
+        self.remove_incomplete_tuples=remove_incomplete_tuples
         self.summary={}
+        self.indices = []
+        self.profile_factory = profile_factory
+        if data:
+            self.split_profiles()
         
     def set_window_size(self,window_size):
-        ''' sets window size used in the moving averaged smoother of the pressure rate
+        '''Sets window size used in the moving averaged smoother of the pressure rate
+
+        Parameters
+        ----------
+
+        window_size : int
+            window size for moving average algorithm
         '''
         self.window_size=window_size
         
     def get_window_size(self):
-        ''' gets window size used in the moving averaged smoother of the pressure rate
-        '''
+        '''Gets window size used in the moving averaged smoother of the pressure rate
 
+        Returns
+        -------
+        int
+            window size
+        '''
         return self.window_size
 
     def set_threshold(self,threshold):
-        ''' sets threshold for change in gradient marks end of profile '''
+        '''Sets threshold for change in gradient marks end of profile
+
+        Parameters
+        ----------
+        threshold : float
+            threshold value which the change in pressure gradient
+            should exceed to mark the transition from one profile to
+            the next.
+        '''
         self.threshold=threshold
         
     def get_threshold(self):
-        ''' gets threshold for change in gradient marks end of profile '''
+        '''Gets threshold for change in gradient marks end of profile
+
+        Returns
+        -------
+        float
+            threshold value
+        '''
         return self.threshold
 
     def set_required_depth(self,required_depth):
-        ''' Set depth level a profile minimally should have '''
+        '''Sets depth level a profile minimally should have.
+
+        Parameters
+        ----------
+        required_depth : float
+            depth limit
+        '''
         self.required_depth=required_depth
 
     def set_required_depth_range(self,required_depth_range):
-        ''' Set depth range a profile minimally should have '''
+        '''Set depth range a profile minimally should have
+
+        Parameters
+        ----------
+        required_depth_range : float
+            minimum depth range a profile should have
+
+        '''
         self.required_depth_range=required_depth_range
 
-    def split_profiles(self,data=None):
-        ''' splits the data into separate profiles. This method should be called before this object can do anything useful.'''
+    def split_profiles(self,data=None, interpolate=False):
+        ''' Splits data into separate profiles. 
+        
+        Parameters
+        ----------
+        data : data dictionary or None
+            a dictionary with data, and at least "time" and "pressure" fields. If None, then
+            the data dictionary supplied to the constructor is used.
+        interpolate : boolean (Default: False)
+            interpolates time and pressure data prior to splitting the profiles
+          
+        Notes
+        -----
+        The method relies on detecting changes in the filtered depth rate. If, however, data
+        are provided, that have down casts, or up casts only, then this fails. A workaround
+        is to interpolate the time and pressure data first, then split, and remap the indices
+        to the original time stamps. This is achieved by setting interpolate to True.
+
+        It is recommnended to leave interpolate equal to False, unless you have data that contain
+        either down or up casts.
+        
+        This method should be called before this object can do anything useful.'''
         self.data=data or self.data
         t=self.data[ProfileSplitter.T_str]
         P=self.data[ProfileSplitter.P_str]
-        self.i_down,self.i_up=self.get_indices(t,P)
-        self.t_down=np.array([t[i].mean() for i in self.i_down])
-        self.t_up=np.array([t[i].mean() for i in self.i_up])
-        self.t_cast=0.5*(self.t_down+self.t_up)
-        
-
-    def len(self):
-        ''' returns number of profiles '''
-        return len(self.i_up)
-
-    def __len__(self):
-        return len(self.i_up)
-
-    def __get_cast(self,parameter,n):
-        j=list(range(self.i_down[n][0],self.i_up[n][-1]+1))
-        t=self.data[ProfileSplitter.T_str][j]
-        v=self.data[parameter][j]
-        return t,v
-
-    def __get_upcast(self,parameter,n):
-        ''' gets up profile for parameter for cast n '''
-        j=list(range(self.i_up[n][0],self.i_up[n][-1]+1))
-        t=self.data[ProfileSplitter.T_str][j]
-        v=self.data[parameter][j]
-        return t,v
-
-    def __get_downcast(self,parameter,n):
-        ''' gets down profile for parameter for cast n '''
-        j=list(range(self.i_down[n][0],self.i_down[n][-1]+1))
-        t=self.data[ProfileSplitter.T_str][j]
-        v=self.data[parameter][j]
-        return t,v
-
-    def get_cast(self,n,parameter,co_parameter=None):
-        ''' 
-        if co_parameter==None:
-
-        gets the down and up profile for parameter for cast n as time series (t,v)
-
+        if interpolate:
+            dt = min(np.median(np.diff(t)), 4)
+            ti = np.arange(t.min(), t.max()+dt, dt)
+            Pi = np.interp(ti, t, P)
+            tfun = interp1d(t, np.arange(t.shape[0]))
+            ifun = lambda i: self._slice_fun((tfun(ti[i])+0.5).astype(int))
         else:
+            ti = t
+            Pi = P
+        i_down, i_up = self._get_indices(ti,Pi)
+        for _i_down, _i_up in zip(i_down, i_up):
+            if interpolate:
+                s_down = ifun(_i_down)
+                s_up = ifun(_i_up)
+            else:
+                s_down = self._slice_fun(_i_down)
+                s_up = self._slice_fun(_i_up)
+            self.indices.append((s_down, s_up))
 
-        gets the down and up profile for parameter for cast n versus co_parameter
-            
+    @property
+    def nop(self):
+        '''Number of profiles'''
+        return len(self.indices)
+    
+    def remove_prematurely_ended_dives(self,threshold=3):
+        ''' Remove up/down yo pairs for
+            which have a depth that is more than <threshold> m shallower than
+            the previous and next dive.
 
-        '''
-
-        if co_parameter==None:
-            return self.__get_cast(parameter,n)
-        else:
-            return self.__get_cast(parameter,n)[1],self.__get_cast(co_parameter,n)[1]
-
-    def get_upcast(self,n,parameter,co_parameter=None):
-        '''
-        if co_parameter==None:
-
-        gets the up profile for parameter for cast n as time series (t,v)
-
-        else:
-
-        gets the up profile for parameter for cast n versus co_parameter
-        '''
-
-        if co_parameter==None:
-            return self.__get_upcast(parameter,n)
-        else:
-            return self.__get_upcast(parameter,n)[1],self.__get_upcast(co_parameter,n)[1]
-
-    def get_downcast(self,n,parameter,co_parameter=None):
-        '''
-        if co_parameter==None:
-
-        gets the down profile for parameter for cast n as time series (t,v)
-
-        else:
-
-        gets the down profile for parameter for cast n versus co_parameter
-        '''
-
-        if co_parameter==None:
-            return self.__get_downcast(parameter,n)
-        else:
-            return self.__get_downcast(parameter,n)[1],self.__get_downcast(co_parameter,n)[1]
-        
-            
-    def get_upcast_avg(self,parameter,n,min_pitch=None,valid_depths=None,levels=None,
-                       integrating_dimension='pressure'):
-        '''
-        Gets the averaged value of parameter for the n-th upcast.
-
-        min_pitch, valid_depths and levels can be specified to fine tune which part of the
-        profile is to be integrated.
-
-        integrating_dimension can be 'pressure' or 'time'
+        Parameters
+        ----------
+        threshold : float {3}
+            If profile is <threshold> m shallower than the previous and next profile, it is considered permaturely ended.
 
         '''
-        return self.__get_updw_cast_avg(parameter,n,'up',min_pitch,valid_depths,levels,
-                                        integrating_dimension)
-
-    def get_downcast_avg(self,parameter,n,min_pitch=None,valid_depths=None,levels=None,
-                         integrating_dimension='pressure'):
-        '''
-        Gets the averaged value of parameter for the n-th downcast.
-
-        min_pitch, valid_depths and levels can be specified to fine tune which part of the
-        profile is to be integrated.
-
-        integrating_dimension can be 'pressure' or 'time'
-
-        '''
-
-        return self.__get_updw_cast_avg(parameter,n,'down',min_pitch,valid_depths,levels,
-                                        integrating_dimension)
-
-    def get_up_avg(self,parameter,min_pitch=None,valid_depths=None,levels=None,
-                   integrating_dimension='pressure'):
-        ''' gets dpeth averaged values from up ALL profiles for parameter'''
-        x=np.vstack([self.get_upcast_avg(parameter,n,min_pitch,valid_depths,levels,
-                                         integrating_dimension) 
-                     for n in range(self.len())])
-        return x
-
-    def get_down_avg(self,parameter,min_pitch=None,valid_depths=None,levels=None,
-                     integrating_dimension='pressure'):
-        ''' gets dpeth averaged values from ALL down profiles for parameter'''
-        x=np.vstack([self.get_downcast_avg(parameter,n,min_pitch,valid_depths,levels,
-                                           integrating_dimension) 
-                     for n in range(self.len())])
-        return x
-
-
-    def remove_incomplete_tuples(self,i_down,i_up):
-        ''' remove incomplete up/down yo pairs '''
-        kd=0
-        ku=0
-        idx_up=[]
-        idx_down=[]
-        n_down=len(i_down)
-        n_up=len(i_up)
-        while 1:
-            if kd>=n_down or ku>=n_up:
-                break
-            c1=i_down[kd][0]<i_up[ku][0] # dive is before climb
-            if not c1: 
-                ku+=1
+        disqualified = []
+        slices = [slice(s_down.start, s_up.stop) for s_down, s_up in self.indices]
+        max_depths = [self.data[ProfileSplitter.P_str][s].max()*10 for s in slices]
+        for i, d in enumerate(max_depths):
+            if i==0:
                 continue
-            if kd>=n_down-1:
-                break
-            c2=i_down[kd+1][0]>i_up[ku][0] # next dive is after climb
-            if not c2:
-                kd+=1
-                continue
-            # got a pair
-            idx_down.append(i_down[kd])
-            idx_up.append(i_up[ku])
-            kd+=1
-            ku+=1
-        return idx_down,idx_up
+            if d-max_depths[i-1] < -threshold:
+                disqualified.append(i)
+        self.summary['removed_prematurely_ended_dives'] = disqualified
+        if disqualified:
+            disqualified.reverse() # start removing from the end.
+            for dqfd in disqualified:
+                self.indices.pop(dqfd)
 
-    def get_indices(self,t,P):
-        ''' This method de factor splits the profiles by finding the for each
+
+    def get_downcasts(self):
+        '''Get down casts only
+
+        Returns
+        -------
+        :class:ProfileList
+            Iterable container structure holding all down casts
+        '''
+        return self._get_casts_worker(0b01)
+
+    def get_upcasts(self):
+        '''Get up casts only
+
+        Returns
+        -------
+        :class:ProfileList
+            Iterable container structure holding all up casts
+        '''
+        return self._get_casts_worker(0b10)
+    
+    def get_casts(self):
+        '''Get down/up cast pairs
+
+        Returns
+        -------
+        :class:ProfileList
+            Iterable container structure holding all down/up casts
+        '''
+        return self._get_casts_worker(0b11)
+
+
+    # Private methods
+            
+    
+    def _get_casts_worker(self, direction):
+        pl = ProfileList(data=self.data, profile_factory=self.profile_factory)
+        for s_down, s_up in self.indices:
+            if direction & 0b01:
+                start = s_down.start
+            else:
+                start = s_up.start
+            if direction & 0b10:
+                stop = s_up.stop
+            else:
+                stop = s_down.stop
+            s = slice(start, stop)
+            pl.append(s)
+        return pl
+            
+    def _slice_fun(self, idx):
+        ''' Returns index list as a slice
+
+        Parameters
+        ----------
+        idx : array of integers
+            data indices
+        
+        Returns
+        -------
+        slice : slice object
+             slice with intial and last data indices. If idx is empty, a slice(0,0) is returned.
+        '''
+        if idx.shape[0]:
+            return slice(idx[0], idx[-1])
+        else:
+            return slice(0,0)
+
+    def _get_indices(self,t,P):
+        ''' This method de facto splits the profiles by finding the for each
             profile the down cast indices, and up cast indices.
 
             The method is not intended to be called directly, but from self.split_profiles()
         '''
         _t=t-t[0]
-        dPdT=np.gradient(P)/np.gradient(_t)
+        dT = np.gradient(_t)
+        dPdT=np.gradient(P)/dT
         window=np.ones(self.window_size,float)/float(self.window_size)
         dPdT_filtered=np.convolve(dPdT,window,'same')
-        idx_down=self.__get_casts(dPdT_filtered,P,"down")
-        idx_up=self.__get_casts(dPdT_filtered,P,"up")
-        if self.__remove_incomplete_tuples:
-            idx_down,idx_up=self.remove_incomplete_tuples(idx_down,idx_up)
+        idx_down=self._get_casts(dPdT_filtered,P,"down")
+        idx_up=self._get_casts(dPdT_filtered,P,"up")
+        if self.remove_incomplete_tuples:
+            idx_down,idx_up=self._remove_incomplete_tuples(idx_down,idx_up)
         self.dPdT=dPdT_filtered
         return idx_down,idx_up
 
-
-    def __get_updw_cast_avg(self,parameter,n,cast,min_pitch,valid_depths,levels,
-                            integrating_dimension):
-
-        if cast=='up':
-            cast_fun=self.__get_upcast
-            fc=-1.
-        else:
-            cast_fun=self.__get_downcast
-            fc=1.
-        t,v=cast_fun(parameter,n)
-        t,P=cast_fun(ProfileSplitter.P_str,n)
-        conditions=[]
-        if min_pitch:
-            pitch=tp,pitch=cast_fun('pitch',n)
-            conditions.append(abs(pitch)>min_pitch)
-        if valid_depths!=None:
-            c1=P>valid_depths[0]/10.
-            c2=P<valid_depths[1]/10.
-            conditions.append(c1)
-            conditions.append(c2)
-        if levels!=None:
-            # we have to limit the profile given the levels
-            if levels[0]=='surface':
-                d0=0
-            else:
-                d0=(cast_fun(levels[0],n)[1]).max()
-            if levels[1]=='bed':
-                d1=1e9
-            else:
-                d1=(cast_fun(levels[1],n)[1]).max()
-            c=np.logical_and(P*10>=d0,P*10<d1)
-            conditions.append(c)
-        if conditions:
-            c=reduce(np.logical_and,conditions)
-            idx=np.where(c)
-            if len(idx[0])==0:
-                tm=np.nan
-                vm=np.nan
-            else:
-                tm=t[idx].mean()
-                if integrating_dimension=='pressure':
-                    vm=np.trapz(v[idx],P[idx])/P[idx].ptp()
+    def _remove_incomplete_tuples(self,i_down,i_up):
+        ''' remove incomplete up/down yo pairs '''
+        if len(i_down)==0 or len(i_up)==0: 
+            print("Found either only downcasts or only upcasts or nothing at all. Continuing anyway.")
+            return i_down, i_up
+        # Normal behaviour:
+        # downcast i ends before upcast i starts, and upcast i ends before downcast i+1 starts, if present.
+        
+        i = 0
+        k = 0
+        error = 0
+        while True:
+            try:
+                d0 = i_down[i]
+            except IndexError:
+                error|=0b001
+            try:
+                u0 = i_up[i]
+            except IndexError:
+                error|=0b010
+            if error == 0: # both profiles exist:
+                condition0 = d0[-1] < u0[0] # downcast ends before upcast starts
+                try:
+                    d1 = i_down[i+1]
+                except IndexError:
+                    error|=0b100
+                if error == 0:
+                    condition1 = d1[0] > u0[-1]
                 else:
-                    vm=v[idx].mean()
-        else:
-            tm=t.mean()
-            if integrating_dimension=='pressure':
-                vm=np.trapz(v,P)/P.ptp()
-            else:
-                vm=v.mean()
-        return tm,fc*vm
+                    condition1 = True
+                if condition0 and condition1:
+                    # all well
+                    if error&0b100:
+                        # found last pair.
+                        break
+                    else:
+                        i+=1
+                        continue
+                else:
+                    if condition1: # condition0 failed
+                        # remove upcast i
+                        i_up.pop(i)
+                        k+=1
+                    if condition0: # condition1 failed.
+                        i_down.pop(i)
+                        k+=1
 
-    def __get_casts(self,dPdT_filtered,P,cast="up"):
+            elif error&0b011: # both profiles fail to exists. We're done.
+                break
+            elif error == 0b010: # no upcast following down cast
+                i_down.pop(i)
+                k+=1 # counter for removed profiles.
+            elif error == 0b001: # no downcast for following upcast.
+                raise NotImplementedError("We have no downcast for next upcast. What should I do?")
+            error = 0
+        self.summary['Number of removed incomplete profiles'] = k
+        return i_down,i_up
+
+
+    def _get_casts(self,dPdT_filtered,P,cast="up"):
         direction=int(cast=="down")*2-1
         idx=np.where(direction*dPdT_filtered>self.threshold)[0]
         k=np.where(np.diff(idx)>1)[0]
@@ -335,8 +547,9 @@ class ProfileSplitter(object):
         k=np.hstack([[0],k,[len(idx)]])
         jdx=[]
         ignored_profiles=[]
-        ptps=[]
-        pmaxs=[]
+        ptps={}
+        pmaxs={}
+        profile_data={}
         for i in range(1,len(k)):
             if k[i]-k[i-1]>self.min_length:
                 j=idx[k[i-1]:k[i]]
@@ -346,67 +559,14 @@ class ProfileSplitter(object):
                     jdx.append(j)
                 else:
                     ignored_profiles.append(i-1)
-                    ptps.append(ptp)
-                    pmaxs.append(pmax)
+                    ptps[i-1]=ptp
+                    pmaxs[i-1]=pmax
+                    profile_data[i-1] = j
         self.summary['ignored_profiles']=ignored_profiles
-        self.summary['ptp']=ptps
-        self.summary['pmax']=pmaxs
+        self.summary['ptp'] = ptps
+        self.summary['pmax'] = pmaxs
+        self.summary['profile_data'] = profile_data
         return jdx
 
-    # to be able to select data according to the mixed layer depth
-    def add_level_timeseries(self,t,z,level_name='pycnocline_depth'):
-        ''' Sets a time series of depth and a given name, for example pycnocline.
-            These depth levels can be used to limit the integration of profile
-            averaged values just to a given layer, such as top-pycnocline, or
-            2 m level - 10 m level etc.
-        '''
-        self.data[level_name]=np.interp(self.data[ProfileSplitter.T_str],t,z)
-        self.levels.append(level_name)
-
-
-class CrossSpectral(ProfileSplitter):
-    def __init__(self,data={},window_size=9,threshold_bar_per_second=1e-3):
-        ProfileSplitter.__init__(self,data,window_size,threshold_bar_per_second)
-    
-    def ideal_length(self,n):
-        return 2**int(np.log2(n))
-
-    def series_length(self):
-        n=self.len()
-        series_length=[self.get_cast(i,ProfileSplitter.T_str)[0].shape[0]
-                       for i in range(n)]
-        min_series_length=min(series_length)
-        sl=self.ideal_length(min_series_length)
-        return n,series_length,sl
-
-    def mean_fft(self,parameter,rn,series_length,sl):
-        fftC=[]
-        for i in rn:
-            j0=(series_length[i]-sl)/2
-            j1=j0+sl
-            C=self.get_cast(i,parameter)[1]
-            #Cw=np.hamming(j1-j0)*C[j0:j1]
-            fftC.append(np.fft.fft(C[j0:j1]))
-        return np.mean(fftC,axis=0)
-
-    def Hs(self,param0,param1,i=None,binsize=1):
-        n,series_length,sl=self.series_length()
-        if i==None:
-            rn=list(range(n))
-        else:
-            rn=i
-        FC=self.mean_fft(param0,rn,series_length,sl)[:sl/2]
-        FT=self.mean_fft(param1,rn,series_length,sl)[:sl/2]
-        if binsize!=1:
-            FC=FC.reshape(-1,binsize).mean(axis=1)
-            FT=FT.reshape(-1,binsize).mean(axis=1)
-        FCT=FC/FT
-        a=FCT.real
-        b=FCT.imag
-        dT=np.diff(self.data[ProfileSplitter.T_str]).mean()
-        fn=0.5*1./dT
-        omega=np.arange(sl/2/binsize)*fn/float(sl/2/binsize)*2.*np.pi
-        print("sample length:",sl)
-        print("n samples:    ",len(rn))
-        return omega,a**2+b**2,np.arctan(b/a)
+        
 

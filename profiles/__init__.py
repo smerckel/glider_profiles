@@ -1,2 +1,2 @@
-__all__=["profiles","filters","thermocline","iterprofiles","ctd", "griddata"]
-#from . import thermocline, iterprofiles, ctd, griddata
+__version__="0.2.0"
+__all__=["profiles"]
