@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "glider_profiles"
+authors = [
+  { name="Lucas Merckelbach", email="lucas.merckelbach@hereon.de" },
+]
+description = "Module split Slocum ocean glider data into profiles"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+		"numpy",
+	     	"scipy",
+	     	"dbdreader >= 0.5.6"
+]
+
+dynamic = ["license", "version"]
+
+[project.urls]
+Homepage = "https://github.com/smerckel/glider_profiles"
+Issues = "https://github.com/smerckel/glider_profiles/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[tool.setuptools.dynamic]
+version = {attr = "glider_profiles.__version__"}
+
+
