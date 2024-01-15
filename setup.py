@@ -1,13 +1,13 @@
-from distutils.core import setup
+from setuptools import setup
 
-setup(name="profiles",
+setup(name="glider_profiles",
       version="0.1",
       scripts=[],
       description='',
       author='Lucas Merckelbach',
       author_email='lucas.merckelbach@hereon.de',
       url='',
-      packages = ["profiles"],
+      packages = ["glider_profiles"],
       license='GPL',
       platforms='UNIX',
       )
