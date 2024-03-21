@@ -49,6 +49,19 @@ class SimpleProfile(object):
         self.cache = {}
         
     def __getattr__(self, parameter):
+        return self.get(parameter)
+    
+    def keys(self):
+        '''Returns the available parameter names
+
+        Returns
+        -------
+        dict_keys
+            list of available parameter names
+        '''
+        return self.data.keys()
+
+    def get(self, parameter):
         try:
             data  = self.cache[parameter]
         except KeyError:
@@ -62,17 +75,7 @@ class SimpleProfile(object):
                 return data
         else:
             return data
-
-    def keys(self):
-        '''Returns the available parameter names
-
-        Returns
-        -------
-        dict_keys
-            list of available parameter names
-        '''
-        return self.data.keys()
-
+        
 
 class AdvancedProfile(SimpleProfile):
     '''Advanced Profile based on SimpleProfile, implementing a despike algorithm.
@@ -342,6 +345,7 @@ class ProfileSplitter(object):
         either down or up casts.
         
         This method should be called before this object can do anything useful.'''
+        self.indices = []
         self.data=data or self.data
         t=self.data[ProfileSplitter.T_str]
         P=self.data[ProfileSplitter.P_str]
@@ -426,6 +430,9 @@ class ProfileSplitter(object):
         return self._get_casts_worker(0b11)
 
 
+    def get_down_up_casts(self):
+        return ( x for x in zip(self.get_downcasts(), self.get_upcasts()))
+    
     # Private methods
             
     

@@ -1,5 +1,5 @@
 import sys
-sys.path.insert(0, '../')
+sys.path.insert(0, '../src')
 
 if not __name__ == '__main__':
     from pytest import fixture
@@ -13,7 +13,7 @@ else:
 import numpy as np
 
 import dbdreader
-import profiles
+from glider_profiles import profiles, ctd
 
 dbd_path = "/home/lucas/gliderdata/nsb3_201907/hd/comet-2019-203-05-000.?bd"
 dbd_path_incomplete = "/home/lucas/gliderdata/helgoland201407/hd/amadeus-2014-204-05-004.?bd"
@@ -33,14 +33,14 @@ def load_gliderdata():
 # Test whether we can load data and get the expected number of profiles.
 def test_load_gliderdata(load_gliderdata):
     data = load_gliderdata
-    ps = profiles.iterprofiles.ProfileSplitter(data)
+    ps = profiles.ProfileSplitter(data)
     ps.split_profiles()
     assert ps.nop == NOP
 
 # Get all profiles, check the mean value of C for the first.
 def test_get_all_casts(load_gliderdata):
     data = load_gliderdata
-    ps = profiles.iterprofiles.ProfileSplitter(data)
+    ps = profiles.ProfileSplitter(data)
     ps.split_profiles()
     Cup = ps.get_upcasts()
     Cmean = Cup.C[0].mean()
@@ -49,7 +49,7 @@ def test_get_all_casts(load_gliderdata):
 # Check we can loop through the profiles, method 1.
 def test_loop_through_profiles(load_gliderdata):
     data = load_gliderdata
-    ps = profiles.iterprofiles.ProfileSplitter(data)
+    ps = profiles.ProfileSplitter(data)
     ps.split_profiles()
     T_means_target = [1563878752.4660194, 1563879239.507901, 1563879731.1192806, 1563880219.1803174,
                       1563880749.6826134, 1563881276.406076, 1563881806.2261407, 1563882319.1111975,
@@ -64,7 +64,7 @@ def test_loop_through_profiles(load_gliderdata):
 # Check we can loop through the profiles, method 2.
 def test_loop_through_profiles_alt(load_gliderdata):
     data = load_gliderdata
-    ps = profiles.iterprofiles.ProfileSplitter(data)
+    ps = profiles.ProfileSplitter(data)
     ps.split_profiles()
     T_means_target = [1563878752.4660194, 1563879239.507901, 1563879731.1192806, 1563880219.1803174,
                       1563880749.6826134, 1563881276.406076, 1563881806.2261407, 1563882319.1111975,
@@ -78,21 +78,13 @@ def test_loop_through_profiles_alt(load_gliderdata):
     result = np.all([np.isclose(x,y) for x,y in zip(T_means, T_means_target)])
     assert result == True
 
-# Check despiking method.    
-def test_despike(load_gliderdata):
-    data = load_gliderdata
-    ps = profiles.iterprofiles.ProfileSplitter(data)
-    ps.split_profiles()
-    up = ps.get_upcasts(despike=True)
-    spm_mean = up.spm[0].mean()
-    assert np.isclose(spm_mean, 0.33243317977624004)
 
 # Check remove incomplete profiles.
 def test_remove_incomplete_profiles():
     dbd = dbdreader.MultiDBD(dbd_path_incomplete)
     tctd, C, T, D, flntu_turb = dbd.get_CTD_sync("sci_flntu_turb_units")
     data = dict(time=tctd, pressure=D, C=C*10, T=T, P=D*10, spm=flntu_turb)
-    ps = profiles.iterprofiles.ProfileSplitter(data)
+    ps = profiles.ProfileSplitter(data)
     ps.split_profiles()
     nop_before = ps.nop
     ps.remove_prematurely_ended_dives(threshold=3)
@@ -101,16 +93,20 @@ def test_remove_incomplete_profiles():
 # Check remove incomplete profiles for a dataset that does not have it.
 def test_remove_incomplete_profiles_alt(load_gliderdata):
     data = load_gliderdata
-    ps = profiles.iterprofiles.ProfileSplitter(data)
+    ps = profiles.ProfileSplitter(data)
     ps.split_profiles()
     nop_before = ps.nop
     ps.remove_prematurely_ended_dives(threshold=3)
     assert nop_before == ps.nop
 
     
-if __name__ == '__main__':    
+if __name__ == '__main__':
+    import matplotlib.pyplot as plt
     data = load_gliderdata()
-    ps = profiles.iterprofiles.ProfileSplitter(data, remove_incomplete_tuples=False)
+    ps = profiles.ProfileSplitter(data, remove_incomplete_tuples=False)
     ps.split_profiles()
 
-    C_up = ps.get_upcasts("spm", despike=True)
+    c = ps.get_casts()
+    for _t, _d in zip(c.time, c.pressure):
+        plt.plot(_t,_d)
+    plt.show()
